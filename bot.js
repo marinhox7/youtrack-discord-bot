@@ -1,9 +1,8 @@
-import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, InteractionResponseType } from 'discord.js';
+import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, SlashCommandBuilder } from 'discord.js';
 import express from 'express';
 import axios from 'axios';
 import { config } from 'dotenv';
 import fs from 'fs';
-import path from 'path';
 
 // Configurar dotenv
 config();
@@ -73,6 +72,465 @@ const COMMENT_TEMPLATES = {
     }
 };
 
+// ==========================================
+// SISTEMA DE RELATÓRIOS
+// ==========================================
+
+const REPORT_CONFIG = {
+    colors: {
+        daily: 0x00ff00,      // Verde
+        weekly: 0x0099ff,     // Azul  
+        monthly: 0xff9900,    // Laranja
+        critical: 0xff0000,   // Vermelho
+        warning: 0xffff00,    // Amarelo
+        success: 0x00ff00     // Verde
+    },
+    emojis: {
+        report: '📊',
+        calendar: '📅',
+        user: '👤',
+        issue: '🎫',
+        done: '✅',
+        progress: '🚧',
+        blocked: '🚫',
+        critical: '🔴',
+        warning: '🟡',
+        clock: '⏰',
+        trend_up: '📈',
+        trend_down: '📉',
+        team: '👥',
+        sprint: '🏃‍♂️'
+    },
+    cache: new Map(),
+    cacheExpiry: 5 * 60 * 1000 // 5 minutos
+};
+
+// Dashboard Engine
+class YouTrackDashboardEngine {
+    constructor(youtrackUrl, token) {
+        this.youtrackUrl = youtrackUrl;
+        this.token = token;
+        this.headers = {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        };
+    }
+
+    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),state(name),type(name),priority(name)') {
+        try {
+            const response = await axios.get(`${this.youtrackUrl}/api/issues`, {
+                headers: this.headers,
+                params: {
+                    query: query,
+                    fields: fields,
+                    '$top': 1000 // Limite alto para análises
+                }
+            });
+            return response.data || [];
+        } catch (error) {
+            console.error('Erro ao buscar issues:', error.response?.data || error.message);
+            return [];
+        }
+    }
+
+    async getDailyMetrics(projectId = null) {
+        const today = new Date().toISOString().split('T')[0];
+        const baseQuery = projectId ? `project: {${projectId}}` : '';
+        
+        const [createdToday, resolvedToday, totalOpen, inProgress] = await Promise.all([
+            this.getIssuesWithFilters(`${baseQuery} created: ${today}`),
+            this.getIssuesWithFilters(`${baseQuery} resolved: ${today}`),
+            this.getIssuesWithFilters(`${baseQuery} state: -{Resolved} -{Done} -{Fixed} -{Closed}`),
+            this.getIssuesWithFilters(`${baseQuery} state: {In Progress} OR state: {In Development}`)
+        ]);
+
+        // Issues antigas (>7 dias sem update)
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const staleIssues = await this.getIssuesWithFilters(`${baseQuery} updated: ..${weekAgo} state: -{Resolved} -{Done}`);
+
+        return {
+            createdToday: createdToday.length,
+            resolvedToday: resolvedToday.length,
+            totalOpen: totalOpen.length,
+            inProgress: inProgress.length,
+            staleIssues: staleIssues.length,
+            netChange: createdToday.length - resolvedToday.length,
+            issues: {
+                created: createdToday,
+                resolved: resolvedToday,
+                open: totalOpen,
+                stale: staleIssues
+            }
+        };
+    }
+
+    async getWeeklyMetrics(projectId = null) {
+        const today = new Date();
+        const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000);
+        const twoWeeksAgo = new Date(today - 14 * 24 * 60 * 60 * 1000);
+        
+        const formatDate = (date) => date.toISOString().split('T')[0];
+        const baseQuery = projectId ? `project: {${projectId}}` : '';
+
+        const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, criticalIssues] = await Promise.all([
+            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(weekAgo)}..${formatDate(today)}`),
+            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(weekAgo)}..${formatDate(today)}`),
+            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
+            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
+            this.getIssuesWithFilters(`${baseQuery} priority: {Critical} OR priority: {High} state: -{Resolved} -{Done}`)
+        ]);
+
+        // Análise por usuário
+        const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
+        
+        // Cálculo de tendências
+        const createdTrend = this.calculateTrend(lastWeekCreated.length, thisWeekCreated.length);
+        const resolvedTrend = this.calculateTrend(lastWeekResolved.length, thisWeekResolved.length);
+
+        return {
+            thisWeek: {
+                created: thisWeekCreated.length,
+                resolved: thisWeekResolved.length
+            },
+            lastWeek: {
+                created: lastWeekCreated.length,
+                resolved: lastWeekResolved.length
+            },
+            trends: {
+                created: createdTrend,
+                resolved: resolvedTrend
+            },
+            criticalOpen: criticalIssues.length,
+            userMetrics,
+            issues: {
+                created: thisWeekCreated,
+                resolved: thisWeekResolved,
+                critical: criticalIssues
+            }
+        };
+    }
+
+    analyzeByUser(createdIssues, resolvedIssues) {
+        const users = new Map();
+        
+        // Contar issues criadas por usuário
+        createdIssues.forEach(issue => {
+            if (issue.reporter) {
+                const login = issue.reporter.login;
+                if (!users.has(login)) {
+                    users.set(login, { name: issue.reporter.name, created: 0, resolved: 0 });
+                }
+                users.get(login).created++;
+            }
+        });
+        
+        // Contar issues resolvidas por assignee
+        resolvedIssues.forEach(issue => {
+            if (issue.assignee) {
+                const login = issue.assignee.login;
+                if (!users.has(login)) {
+                    users.set(login, { name: issue.assignee.name, created: 0, resolved: 0 });
+                }
+                users.get(login).resolved++;
+            }
+        });
+        
+        return Array.from(users.entries()).map(([login, data]) => ({
+            login,
+            name: data.name,
+            created: data.created,
+            resolved: data.resolved,
+            productivity: data.resolved - data.created
+        }));
+    }
+
+    calculateTrend(oldValue, newValue) {
+        if (oldValue === 0) return newValue > 0 ? 'up' : 'stable';
+        const change = ((newValue - oldValue) / oldValue) * 100;
+        if (Math.abs(change) < 5) return 'stable';
+        return change > 0 ? 'up' : 'down';
+    }
+}
+
+// Template System
+class ReportTemplateEngine {
+    constructor() {
+        this.templates = new Map();
+        this.initializeTemplates();
+    }
+
+    initializeTemplates() {
+        this.templates.set('daily', this.createDailyTemplate.bind(this));
+        this.templates.set('weekly', this.createWeeklyTemplate.bind(this));
+        this.templates.set('user_detail', this.createUserDetailTemplate.bind(this));
+    }
+
+    createDailyTemplate(metrics, projectName = 'Todos os Projetos') {
+        const { emojis, colors } = REPORT_CONFIG;
+        const today = new Date().toLocaleDateString('pt-BR');
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`${emojis.report} Relatório Diário - ${projectName}`)
+            .setDescription(`${emojis.calendar} **${today}**`)
+            .setColor(colors.daily)
+            .setTimestamp();
+
+        // KPIs principais
+        const kpisValue = [
+            `${emojis.issue} **Criadas hoje:** ${metrics.createdToday}`,
+            `${emojis.done} **Resolvidas hoje:** ${metrics.resolvedToday}`,
+            `${emojis.progress} **Em andamento:** ${metrics.inProgress}`,
+            `${emojis.warning} **Total abertas:** ${metrics.totalOpen}`
+        ].join('\n');
+
+        embed.addFields({
+            name: `${emojis.trend_up} KPIs do Dia`,
+            value: kpisValue,
+            inline: false
+        });
+
+        // Saldo líquido
+        const netChangeEmoji = metrics.netChange > 0 ? emojis.warning : 
+                              metrics.netChange < 0 ? emojis.done : '➖';
+        const netChangeText = metrics.netChange > 0 ? `+${metrics.netChange} (criou mais que resolveu)` :
+                             metrics.netChange < 0 ? `${metrics.netChange} (resolveu mais que criou)` :
+                             '0 (equilibrio)';
+
+        embed.addFields({
+            name: `${emojis.clock} Saldo Líquido`,
+            value: `${netChangeEmoji} **${netChangeText}**`,
+            inline: true
+        });
+
+        // Alertas
+        if (metrics.staleIssues > 0) {
+            embed.addFields({
+                name: `${emojis.blocked} Alerta de Gargalos`,
+                value: `⚠️ **${metrics.staleIssues} issues** sem atualização há +7 dias`,
+                inline: true
+            });
+        }
+
+        return embed;
+    }
+
+    createWeeklyTemplate(metrics, projectName = 'Todos os Projetos') {
+        const { emojis, colors } = REPORT_CONFIG;
+        const weekRange = this.getWeekRange();
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`${emojis.sprint} Relatório Semanal - ${projectName}`)
+            .setDescription(`${emojis.calendar} **${weekRange}**`)
+            .setColor(colors.weekly)
+            .setTimestamp();
+
+        // Performance da semana
+        const performanceValue = [
+            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created} ${this.getTrendEmoji(metrics.trends.created)}`,
+            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved} ${this.getTrendEmoji(metrics.trends.resolved)}`,
+            `${emojis.critical} **Críticas abertas:** ${metrics.criticalOpen}`
+        ].join('\n');
+
+        embed.addFields({
+            name: `${emojis.trend_up} Performance da Semana`,
+            value: performanceValue,
+            inline: false
+        });
+
+        // Comparação com semana anterior
+        const comparisonValue = [
+            `Criadas: **${metrics.lastWeek.created}** → **${metrics.thisWeek.created}**`,
+            `Resolvidas: **${metrics.lastWeek.resolved}** → **${metrics.thisWeek.resolved}**`
+        ].join('\n');
+
+        embed.addFields({
+            name: `${emojis.clock} vs. Semana Anterior`,
+            value: comparisonValue,
+            inline: true
+        });
+
+        // Top performers
+        const topUsers = metrics.userMetrics
+            .sort((a, b) => b.resolved - a.resolved)
+            .slice(0, 3)
+            .map((user, index) => {
+                const medal = ['🥇', '🥈', '🥉'][index];
+                return `${medal} **${user.name}**: ${user.resolved} resolvidas`;
+            })
+            .join('\n');
+
+        if (topUsers) {
+            embed.addFields({
+                name: `${emojis.team} Top Performers`,
+                value: topUsers,
+                inline: true
+            });
+        }
+
+        return embed;
+    }
+
+    createUserDetailTemplate(userMetrics, period = 'semanal') {
+        const { emojis, colors } = REPORT_CONFIG;
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`${emojis.user} Detalhamento por Usuário - ${period}`)
+            .setColor(colors.weekly)
+            .setTimestamp();
+
+        const userDetails = userMetrics
+            .sort((a, b) => b.productivity - a.productivity)
+            .map(user => {
+                const productivityEmoji = user.productivity > 0 ? emojis.trend_up :
+                                        user.productivity < 0 ? emojis.trend_down : '➖';
+                return [
+                    `**${user.name}**`,
+                    `${emojis.issue} Criadas: ${user.created}`,
+                    `${emojis.done} Resolvidas: ${user.resolved}`,
+                    `${productivityEmoji} Saldo: ${user.productivity > 0 ? '+' : ''}${user.productivity}`
+                ].join('\n');
+            })
+            .join('\n\n');
+
+        embed.setDescription(userDetails || 'Nenhum dado disponível');
+        return embed;
+    }
+
+    getTrendEmoji(trend) {
+        const { emojis } = REPORT_CONFIG;
+        switch (trend) {
+            case 'up': return emojis.trend_up;
+            case 'down': return emojis.trend_down;
+            default: return '➖';
+        }
+    }
+
+    getWeekRange() {
+        const today = new Date();
+        const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000);
+        return `${weekAgo.toLocaleDateString('pt-BR')} - ${today.toLocaleDateString('pt-BR')}`;
+    }
+
+    generateReport(type, metrics, projectName) {
+        const template = this.templates.get(type);
+        if (!template) {
+            throw new Error(`Template '${type}' não encontrado`);
+        }
+        return template(metrics, projectName);
+    }
+}
+
+// Smart Caching
+class ReportCacheManager {
+    constructor() {
+        this.cache = REPORT_CONFIG.cache;
+        this.expiry = REPORT_CONFIG.cacheExpiry;
+    }
+
+    getCacheKey(type, projectId, additionalParams = {}) {
+        const params = JSON.stringify(additionalParams);
+        return `${type}_${projectId || 'all'}_${params}`;
+    }
+
+    get(key) {
+        const cached = this.cache.get(key);
+        if (!cached) return null;
+        
+        if (Date.now() - cached.timestamp > this.expiry) {
+            this.cache.delete(key);
+            return null;
+        }
+        
+        return cached.data;
+    }
+
+    set(key, data) {
+        this.cache.set(key, {
+            data,
+            timestamp: Date.now()
+        });
+    }
+}
+
+// Sistema Principal de Relatórios
+class YouTrackReportSystem {
+    constructor(youtrackUrl, token) {
+        this.engine = new YouTrackDashboardEngine(youtrackUrl, token);
+        this.templates = new ReportTemplateEngine();
+        this.cache = new ReportCacheManager();
+    }
+
+    async generateDailyReport(projectId = null) {
+        const cacheKey = this.cache.getCacheKey('daily', projectId);
+        let metrics = this.cache.get(cacheKey);
+        
+        if (!metrics) {
+            metrics = await this.engine.getDailyMetrics(projectId);
+            this.cache.set(cacheKey, metrics);
+        }
+        
+        const projectName = projectId || 'Todos os Projetos';
+        const embed = this.templates.generateReport('daily', metrics, projectName);
+        
+        // Criar botões de interação
+        const buttons = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`report_drill_users_daily`)
+                    .setLabel('📂 Ver por Usuário')
+                    .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                    .setCustomId(`report_drill_issues_stale`)
+                    .setLabel('⚠️ Issues Antigas')
+                    .setStyle(ButtonStyle.Danger)
+                    .setDisabled(metrics.staleIssues === 0)
+            );
+
+        return { embed, components: [buttons], metrics };
+    }
+
+    async generateWeeklyReport(projectId = null) {
+        const cacheKey = this.cache.getCacheKey('weekly', projectId);
+        let metrics = this.cache.get(cacheKey);
+        
+        if (!metrics) {
+            metrics = await this.engine.getWeeklyMetrics(projectId);
+            this.cache.set(cacheKey, metrics);
+        }
+        
+        const projectName = projectId || 'Todos os Projetos';
+        const embed = this.templates.generateReport('weekly', metrics, projectName);
+        
+        // Criar botões de interação
+        const buttons = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`report_drill_users_weekly`)
+                    .setLabel('👥 Detalhamento por Usuário')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId(`report_drill_critical`)
+                    .setLabel('🔴 Issues Críticas')
+                    .setStyle(ButtonStyle.Danger)
+                    .setDisabled(metrics.criticalOpen === 0)
+            );
+
+        return { embed, components: [buttons], metrics };
+    }
+
+    async generateUserDetailReport(userMetrics, period) {
+        const embed = this.templates.generateReport('user_detail', { userMetrics }, period);
+        return { embed, components: [] };
+    }
+}
+
+// Instância do sistema de relatórios (será inicializada após as variáveis estarem carregadas)
+let reportSystem;
+
+// ==========================================
+// FUNÇÕES EXISTENTES
+// ==========================================
+
 // Função para obter estados do projeto
 async function getProjectStates(projectId) {
     if (projectStatesCache.has(projectId)) {
@@ -80,7 +538,6 @@ async function getProjectStates(projectId) {
     }
 
     try {
-        // 1. Obter campos customizados do projeto
         const projectFieldsResponse = await axios.get(
             `${YOUTRACK_URL}/api/admin/projects/${projectId}/customFields?fields=id,field(name),$type`,
             {
@@ -91,7 +548,6 @@ async function getProjectStates(projectId) {
             }
         );
 
-        // 2. Encontrar field ID do campo State
         const customFields = projectFieldsResponse.data;
         const stateField = customFields.find(field => 
             field.field.name === 'State' && field.$type === 'StateProjectCustomField'
@@ -102,7 +558,6 @@ async function getProjectStates(projectId) {
             return [];
         }
 
-        // 3. Buscar valores do bundle usando fieldId
         const bundleValuesResponse = await axios.get(
             `${YOUTRACK_URL}/api/admin/projects/${projectId}/customFields/${stateField.id}/bundle/values?fields=id,name,isResolved,ordinal`,
             {
@@ -126,7 +581,6 @@ async function getProjectStates(projectId) {
 // Função para atribuir issue
 async function assignIssue(issueId, userLogin) {
     try {
-        // MÉTODO 1: Commands API (RECOMENDADO)
         const commandPayload = {
             query: `Assignee ${userLogin}`,
             issues: [{ idReadable: issueId }]
@@ -146,7 +600,6 @@ async function assignIssue(issueId, userLogin) {
         console.error('Erro Commands API, tentando método alternativo:', error.response?.data || error.message);
         
         try {
-            // MÉTODO 2: Fallback customFields
             await axios.post(`${YOUTRACK_URL}/api/issues/${issueId}`, {
                 customFields: [{
                     name: 'Assignee',
@@ -198,7 +651,6 @@ async function changeIssueState(issueId, stateId) {
 }
 
 // Função para adicionar comentário
-// Função para adicionar comentário (SUBSTITUIR A EXISTENTE)
 async function addCommentToIssue(issueId, comment, authorName) {
     try {
         // MÉTODO 1: Resolver ID legível para ID interno
@@ -280,38 +732,91 @@ async function addCommentToIssue(issueId, comment, authorName) {
         }
     }
 }
+
 // Event listener quando o bot estiver pronto
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`Bot Discord conectado como: ${client.user.tag}`);
+    
+    // Inicializar sistema de relatórios
+    reportSystem = new YouTrackReportSystem(YOUTRACK_URL, YOUTRACK_TOKEN);
+    
+    // Registrar comandos slash
+    const commands = [
+        new SlashCommandBuilder()
+            .setName('youtrack')
+            .setDescription('Comandos do YouTrack')
+            .addSubcommand(subcommand =>
+                subcommand
+                    .setName('report')
+                    .setDescription('Gerar relatório')
+                    .addStringOption(option =>
+                        option
+                            .setName('tipo')
+                            .setDescription('Tipo de relatório')
+                            .setRequired(true)
+                            .addChoices(
+                                { name: '📅 Diário', value: 'daily' },
+                                { name: '📊 Semanal', value: 'weekly' }
+                            )
+                    )
+                    .addStringOption(option =>
+                        option
+                            .setName('projeto')
+                            .setDescription('ID do projeto (opcional)')
+                            .setRequired(false)
+                    )
+            )
+    ];
+
+    try {
+        await client.application.commands.set(commands);
+        console.log('Comandos slash registrados com sucesso!');
+    } catch (error) {
+        console.error('Erro ao registrar comandos slash:', error);
+    }
 });
 
 // Event listener para interações
-// Event listener para interações (SUBSTITUIR COMPLETAMENTE)
 client.on('interactionCreate', async interaction => {
+    // Handler para comandos slash
+    if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === 'youtrack') {
+            if (interaction.options.getSubcommand() === 'report') {
+                await handleReportCommand(interaction);
+                return;
+            }
+        }
+    }
+    
+    // Handler para botões de drill-down de relatórios
+    if (interaction.isButton() && interaction.customId.startsWith('report_drill_')) {
+        await handleReportDrillDown(interaction);
+        return;
+    }
+    
+    // Continuar com os handlers existentes...
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
     try {
-        // ==========================================
         // MODAL PARA COMENTÁRIO CUSTOMIZADO
-        // ==========================================
         if (interaction.isModalSubmit() && interaction.customId.startsWith('comment_modal_')) {
-            const issueId = interaction.customId.replace('comment_modal_', ''); // FIX: Extrair ID corretamente
+            const issueId = interaction.customId.replace('comment_modal_', '');
             const commentText = interaction.fields.getTextInputValue('comment_input');
             const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
             
-            console.log(`Processando modal de comentário para issue: ${issueId}`); // Debug log
+            console.log(`Processando modal de comentário para issue: ${issueId}`);
             
             const result = await addCommentToIssue(issueId, commentText, authorName);
             
             if (result.success) {
                 await interaction.reply({
                     content: `✅ Comentário adicionado à issue ${issueId}!`,
-                    flags: 64 // EPHEMERAL flag
+                    flags: 64
                 });
             } else {
                 await interaction.reply({
                     content: `❌ Erro ao adicionar comentário: ${result.error}`,
-                    flags: 64 // EPHEMERAL flag
+                    flags: 64
                 });
             }
             return;
@@ -329,11 +834,9 @@ client.on('interactionCreate', async interaction => {
             }
         }
         
-        console.log(`Processando interação para issue: ${issueId}, tipo: ${interaction.customId.split('_')[0]}`); // Debug log
+        console.log(`Processando interação para issue: ${issueId}, tipo: ${interaction.customId.split('_')[0]}`);
         
-        // ==========================================
         // BOTÕES
-        // ==========================================
         if (interaction.isButton()) {
             const action = interaction.customId.split('_')[0];
             
@@ -367,7 +870,6 @@ client.on('interactionCreate', async interaction => {
             // BOTÃO DE ESTADOS
             } else if (action === 'states') {
                 try {
-                    // Obter projectId da issue
                     const issueResponse = await axios.get(`${YOUTRACK_URL}/api/issues/${issueId}?fields=project(id)`, {
                         headers: {
                             Authorization: `Bearer ${YOUTRACK_TOKEN}`,
@@ -386,7 +888,6 @@ client.on('interactionCreate', async interaction => {
                         return;
                     }
                     
-                    // Limitar a 25 opções (limite do Discord)
                     const limitedStates = states.slice(0, 25);
                     
                     const selectMenu = new StringSelectMenuBuilder()
@@ -419,7 +920,7 @@ client.on('interactionCreate', async interaction => {
             // BOTÃO DE COMENTÁRIO CUSTOMIZADO
             } else if (action === 'comment') {
                 const modal = new ModalBuilder()
-                    .setCustomId(`comment_modal_${issueId}`) // FIX: ID correto no modal
+                    .setCustomId(`comment_modal_${issueId}`)
                     .setTitle(`Comentar na Issue ${issueId}`);
 
                 const commentInput = new TextInputBuilder()
@@ -437,7 +938,7 @@ client.on('interactionCreate', async interaction => {
                 
             // BOTÕES DE COMENTÁRIOS RÁPIDOS
             } else if (action === 'quick') {
-                const templateKey = interaction.customId.split('_')[2]; // quick_issueId_templateKey
+                const templateKey = interaction.customId.split('_')[2];
                 const template = COMMENT_TEMPLATES[templateKey];
                 
                 if (!template) {
@@ -487,9 +988,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
         
-        // ==========================================
         // SELECT MENU PARA ESTADOS
-        // ==========================================
         if (interaction.isStringSelectMenu()) {
             const action = interaction.customId.split('_')[0];
             
@@ -522,6 +1021,66 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
+// Handlers para relatórios
+async function handleReportCommand(interaction) {
+    await interaction.deferReply();
+    
+    try {
+        const reportType = interaction.options.getString('tipo');
+        const projectId = interaction.options.getString('projeto');
+        
+        let result;
+        switch (reportType) {
+            case 'daily':
+                result = await reportSystem.generateDailyReport(projectId);
+                break;
+            case 'weekly':
+                result = await reportSystem.generateWeeklyReport(projectId);
+                break;
+            default:
+                await interaction.editReply('❌ Tipo de relatório não suportado');
+                return;
+        }
+        
+        await interaction.editReply({
+            embeds: [result.embed],
+            components: result.components
+        });
+        
+    } catch (error) {
+        console.error('Erro ao gerar relatório:', error);
+        await interaction.editReply('❌ Erro ao gerar relatório. Tente novamente.');
+    }
+}
+
+async function handleReportDrillDown(interaction) {
+    await interaction.deferReply({ flags: 64 });
+    
+    try {
+        const action = interaction.customId.split('_')[2];
+        const period = interaction.customId.split('_')[3];
+        
+        if (action === 'users') {
+            const cacheKey = reportSystem.cache.getCacheKey(period, null);
+            const cachedMetrics = reportSystem.cache.get(cacheKey);
+            
+            if (cachedMetrics && cachedMetrics.userMetrics) {
+                const result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
+                await interaction.editReply({
+                    embeds: [result.embed],
+                    components: result.components
+                });
+            } else {
+                await interaction.editReply('❌ Dados não disponíveis. Execute o relatório principal primeiro.');
+            }
+        }
+        
+    } catch (error) {
+        console.error('Erro no drill-down:', error);
+        await interaction.editReply('❌ Erro ao carregar detalhes');
+    }
+}
+
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
     try {
@@ -530,7 +1089,6 @@ app.post('/webhook', async (req, res) => {
         
         const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
         
-        // Criar embed
         const embed = new EmbedBuilder()
             .setTitle(data.title)
             .setURL(data.url)
@@ -539,7 +1097,6 @@ app.post('/webhook', async (req, res) => {
             .setTimestamp()
             .setFooter({ text: `Por ${data.userVisibleName}` });
         
-        // Adicionar campos
         if (data.fields && data.fields.length > 0) {
             data.fields.forEach(field => {
                 embed.addFields({
@@ -550,11 +1107,7 @@ app.post('/webhook', async (req, res) => {
             });
         }
         
-        // ==========================================
-        // BOTÕES COM SISTEMA DE COMENTÁRIOS
-        // ==========================================
-        
-        // Primeira linha: Ações principais
+        // Botões com sistema de comentários
         const assignButton = new ButtonBuilder()
             .setCustomId(`assign_${data.issueId}`)
             .setLabel('Atribuir para mim')
