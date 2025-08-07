@@ -198,49 +198,81 @@ async function changeIssueState(issueId, stateId) {
 }
 
 // Função para adicionar comentário
+// Função para adicionar comentário (SUBSTITUIR A EXISTENTE)
 async function addCommentToIssue(issueId, comment, authorName) {
     try {
-        // Método 1: Tentar criar comentário diretamente
+        // MÉTODO 1: Resolver ID legível para ID interno
+        let internalId = issueId;
+        
+        // Se o ID não estiver no formato interno (2-42), resolver primeiro
+        if (!/^\d+-\d+$/.test(issueId)) {
+            try {
+                const resolveResponse = await axios.get(
+                    `${YOUTRACK_URL}/api/issues/${issueId}?fields=id`,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${YOUTRACK_TOKEN}`,
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+                internalId = resolveResponse.data.id;
+                console.log(`ID ${issueId} resolvido para ID interno: ${internalId}`);
+            } catch (resolveError) {
+                console.log(`Não foi possível resolver ID ${issueId}, usando original`);
+            }
+        }
+        
+        // Tentar adicionar comentário com ID interno
         const payload = {
-            text: `${comment}\n\n*— ${authorName}*`
+            text: `${comment}\n\n*— ${authorName}*`,
+            visibility: {
+                "$type": "UnlimitedVisibility"
+            }
         };
         
         const response = await axios.post(
-            `${YOUTRACK_URL}/api/issues/${issueId}/comments`, 
+            `${YOUTRACK_URL}/api/issues/${internalId}/comments`,
             payload,
             {
                 headers: {
                     Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
                 }
             }
         );
         
-        console.log(`Comentário adicionado à issue ${issueId} por ${authorName}`);
-        return { success: true, commentId: response.data.id };
+        console.log(`Comentário adicionado à issue ${issueId} por ${authorName} (método REST)`);
+        return { success: true, commentId: response.data.id, method: 'REST' };
         
     } catch (error) {
-        console.error('Erro método 1, tentando Commands API:', error.response?.data || error.message);
+        console.error('Erro método REST, tentando Commands API:', error.response?.data || error.message);
         
         try {
-            // Método 2: Usar Commands API como fallback
+            // MÉTODO 2: Commands API como fallback
             const commandPayload = {
-                query: `comment ${comment}\n\n*— ${authorName}*`,
-                issues: [{ idReadable: issueId }]
+                query: "", // Comando vazio, apenas comentário
+                comment: `${comment}\n\n*— ${authorName}*`,
+                issues: [{ idReadable: issueId }] // Commands API aceita ID legível
             };
             
-            await axios.post(`${YOUTRACK_URL}/api/commands`, commandPayload, {
-                headers: {
-                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json'
+            const commandResponse = await axios.post(
+                `${YOUTRACK_URL}/api/commands`,
+                commandPayload,
+                {
+                    headers: {
+                        Authorization: `Bearer ${YOUTRACK_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
                 }
-            });
+            );
             
-            console.log(`Comentário adicionado via Commands API à issue ${issueId} por ${authorName}`);
-            return { success: true, method: 'commands' };
+            console.log(`Comentário adicionado à issue ${issueId} por ${authorName} (método Commands)`);
+            return { success: true, method: 'Commands' };
             
         } catch (commandError) {
-            console.error('Erro ao adicionar comentário (ambos métodos):', commandError.response?.data || commandError.message);
+            console.error('Erro ao adicionar comentário (ambos métodos falharam):', commandError.response?.data || commandError.message);
             return { 
                 success: false, 
                 error: commandError.response?.data?.error_description || commandError.message 
@@ -248,25 +280,26 @@ async function addCommentToIssue(issueId, comment, authorName) {
         }
     }
 }
-
 // Event listener quando o bot estiver pronto
 client.once('ready', () => {
     console.log(`Bot Discord conectado como: ${client.user.tag}`);
 });
 
 // Event listener para interações
+// Event listener para interações (SUBSTITUIR COMPLETAMENTE)
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
-    const issueId = interaction.customId.split('_')[1];
-    
     try {
         // ==========================================
         // MODAL PARA COMENTÁRIO CUSTOMIZADO
         // ==========================================
         if (interaction.isModalSubmit() && interaction.customId.startsWith('comment_modal_')) {
+            const issueId = interaction.customId.replace('comment_modal_', ''); // FIX: Extrair ID corretamente
             const commentText = interaction.fields.getTextInputValue('comment_input');
             const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
+            
+            console.log(`Processando modal de comentário para issue: ${issueId}`); // Debug log
             
             const result = await addCommentToIssue(issueId, commentText, authorName);
             
@@ -284,6 +317,20 @@ client.on('interactionCreate', async interaction => {
             return;
         }
         
+        // Extrair issueId corretamente dos botões e select menus
+        let issueId;
+        if (interaction.isButton() || interaction.isStringSelectMenu()) {
+            const parts = interaction.customId.split('_');
+            if (parts.length >= 2) {
+                issueId = parts[1];
+            } else {
+                console.error('CustomId malformado:', interaction.customId);
+                return;
+            }
+        }
+        
+        console.log(`Processando interação para issue: ${issueId}, tipo: ${interaction.customId.split('_')[0]}`); // Debug log
+        
         // ==========================================
         // BOTÕES
         // ==========================================
@@ -298,7 +345,7 @@ client.on('interactionCreate', async interaction => {
                 if (!youtrackLogin) {
                     await interaction.reply({
                         content: '❌ Usuário não mapeado. Configure o userMap.json',
-                        ephemeral: true
+                        flags: 64
                     });
                     return;
                 }
@@ -308,12 +355,12 @@ client.on('interactionCreate', async interaction => {
                 if (success) {
                     await interaction.reply({
                         content: `✅ Issue ${issueId} atribuída para você!`,
-                        ephemeral: true
+                        flags: 64
                     });
                 } else {
                     await interaction.reply({
                         content: `❌ Erro ao atribuir issue ${issueId}`,
-                        ephemeral: true
+                        flags: 64
                     });
                 }
                 
@@ -334,7 +381,7 @@ client.on('interactionCreate', async interaction => {
                     if (states.length === 0) {
                         await interaction.reply({
                             content: '❌ Não foi possível obter os estados disponíveis',
-                            ephemeral: true
+                            flags: 64
                         });
                         return;
                     }
@@ -358,21 +405,21 @@ client.on('interactionCreate', async interaction => {
                     await interaction.reply({
                         content: `Escolha o novo estado para ${issueId}:`,
                         components: [row],
-                        ephemeral: true
+                        flags: 64
                     });
                     
                 } catch (error) {
                     console.error('Erro ao buscar estados:', error);
                     await interaction.reply({
                         content: '❌ Erro ao buscar estados disponíveis',
-                        ephemeral: true
+                        flags: 64
                     });
                 }
                 
             // BOTÃO DE COMENTÁRIO CUSTOMIZADO
             } else if (action === 'comment') {
                 const modal = new ModalBuilder()
-                    .setCustomId(`comment_modal_${issueId}`)
+                    .setCustomId(`comment_modal_${issueId}`) // FIX: ID correto no modal
                     .setTitle(`Comentar na Issue ${issueId}`);
 
                 const commentInput = new TextInputBuilder()
@@ -396,7 +443,7 @@ client.on('interactionCreate', async interaction => {
                 if (!template) {
                     await interaction.reply({
                         content: '❌ Template de comentário não encontrado',
-                        ephemeral: true
+                        flags: 64
                     });
                     return;
                 }
@@ -407,12 +454,12 @@ client.on('interactionCreate', async interaction => {
                 if (result.success) {
                     await interaction.reply({
                         content: `${template.emoji} Comentário "${templateKey}" adicionado à issue ${issueId}!`,
-                        ephemeral: true
+                        flags: 64
                     });
                 } else {
                     await interaction.reply({
                         content: `❌ Erro ao adicionar comentário: ${result.error}`,
-                        ephemeral: true
+                        flags: 64
                     });
                 }
                 
@@ -435,7 +482,7 @@ client.on('interactionCreate', async interaction => {
                 await interaction.reply({
                     content: `Escolha um comentário rápido para ${issueId}:`,
                     components: rows,
-                    ephemeral: true
+                    flags: 64
                 });
             }
         }
@@ -453,12 +500,12 @@ client.on('interactionCreate', async interaction => {
                 if (success) {
                     await interaction.reply({
                         content: `✅ Estado da issue ${issueId} alterado com sucesso!`,
-                        ephemeral: true
+                        flags: 64
                     });
                 } else {
                     await interaction.reply({
                         content: `❌ Erro ao alterar estado da issue ${issueId}`,
-                        ephemeral: true
+                        flags: 64
                     });
                 }
             }
@@ -466,10 +513,12 @@ client.on('interactionCreate', async interaction => {
         
     } catch (error) {
         console.error('Erro ao processar interação:', error);
-        await interaction.reply({
-            content: '❌ Erro interno do bot',
-            ephemeral: true
-        });
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: '❌ Erro interno do bot',
+                flags: 64
+            });
+        }
     }
 });
 
