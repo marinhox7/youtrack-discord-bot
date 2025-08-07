@@ -1,88 +1,391 @@
-🚀 YouTrack Discord Bot
-Um bot do Discord que se integra com o YouTrack para automatizar a comunicação e o fluxo de trabalho de issues.
+# 🎫 YouTrack Discord Bot
 
-🌟 Visão Geral
-Este projeto conecta o YouTrack ao Discord, enviando notificações automáticas para um canal específico sempre que uma issue é criada ou atualizada. Além disso, o bot adiciona botões interativos que permitem aos membros do servidor realizar ações diretamente no YouTrack, como atribuir a si mesmos ou mudar o estado de uma issue.
+<div align="center">
 
-A solução foi desenvolvida para contornar algumas limitações da API do YouTrack, utilizando a Commands API para operações que falhavam com customFields, garantindo assim um sistema mais robusto.
+![YouTrack Discord Bot](https://img.shields.io/badge/YouTrack-Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-339933?style=for-the-badge&logo=node.js&logoColor=white)
+![Express](https://img.shields.io/badge/Express-000000?style=for-the-badge&logo=express&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen?style=for-the-badge)
 
-✨ Funcionalidades
-📢 Notificações de Issues: Receba alertas em tempo real no Discord para issues criadas ou finalizadas.
+*Bot Discord avançado com integração completa ao YouTrack para automação de workflows e relatórios de produtividade*
 
-🖱️ Interações com Botões: Interaja diretamente com as issues do YouTrack através de botões na mensagem do Discord para:
+[📥 Instalação](#-instalação) • [⚡ Recursos](#-recursos) • [🚀 Uso](#-uso) • [⚙️ Configuração](#️-configuração) • [📊 Relatórios](#-relatórios)
 
-🔧 Atribuir a mim: Atribui a issue ao usuário que clicou no botão.
+</div>
 
-🔄 Mudar estado: Apresenta um menu para mudar o estado da issue (e.g., de "To do" para "In Progress").
+---
 
-🔗 Acessar Issue: Link direto para a issue no YouTrack.
+## ✨ Recursos
 
-👤 Mapeamento de Usuários: Mapeia usuários do Discord para usuários do YouTrack, permitindo a correta atribuição de issues.
+### 🔔 **Notificações Inteligentes**
+- Notificações automáticas de criação e resolução de issues
+- Embeds personalizados com informações detalhadas
+- Integração via webhooks do YouTrack
 
-🔒 Validação de Webhook: Garante que apenas webhooks válidos do YouTrack sejam processados, protegendo contra acessos não autorizados.
+### 🎛️ **Controles Interativos**
+- **Botões de atribuição** - Atribua issues para você com um clique
+- **Seletor de estados** - Altere o status das issues diretamente no Discord
+- **Sistema de comentários** - Adicione comentários customizados ou use templates rápidos
+- **Templates pré-definidos** - Respostas padronizadas para situações comuns
 
-🏗️ Arquitetura
-O sistema é composto por três partes principais:
+### 📊 **Relatórios Avançados**
+- **Relatórios diários** - KPIs, saldo líquido, alertas de gargalos
+- **Relatórios semanais** - Tendências, top performers, comparações
+- **Drill-down interativo** - Detalhamento por usuário e issues críticas
+- **Cache inteligente** - Performance otimizada com cache de 5 minutos
 
-YouTrack: Envia webhooks para um servidor externo em resposta a eventos de issues.
+### 🔧 **Sistema Robusto**
+- **Fallback automático** - Commands API + CustomFields API
+- **Tratamento de erros** - Recuperação automática de falhas
+- **Mapeamento de usuários** - Sincronização Discord ↔ YouTrack
+- **Cache de estados** - Performance melhorada para projetos
 
-Servidor Express (server.js): Recebe os webhooks do YouTrack. Ele valida o token de segurança e processa o payload. Este servidor pode ser exposto à internet usando uma ferramenta como o ngrok.
+---
 
-Discord Bot (bot.js): Processa o payload do webhook e envia mensagens formatadas e com botões interativos para o canal do Discord. Ele também gerencia as interações de clique nos botões.
+## 🚀 Demonstração
 
-graph TD
-    A[YouTrack] -- Webhook --> B(ngrok/Servidor Express);
-    B -- Payload Processado --> C(Discord Bot);
-    C -- Mensagem com Botões --> D[Canal do Discord];
-    D -- Clique em Botão --> C;
-    C -- API Call --> A;
+### 📱 Notificação de Issue
+```
+🆕 Issue YOU-123: Implementar autenticação OAuth
+📝 Descrição: Adicionar sistema de login social...
 
-⚙️ Configuração do Ambiente
-📋 Pré-requisitos
-Node.js instalado
+[👤 Atribuir para mim] [🔄 Alterar Estado] [💬 Comentar] [⚡ Comentários Rápidos]
+```
 
-Uma conta e um bot no Discord Developer Portal
+### 📈 Relatório Diário
+```
+📊 Relatório Diário - Projeto Alpha
+📅 07/08/2025
 
-Uma conta e um projeto no YouTrack
+📈 KPIs do Dia
+🎫 Criadas hoje: 18
+✅ Resolvidas hoje: 12
+🚧 Em andamento: 45
+🟡 Total abertas: 156
 
-ngrok para expor o servidor local (opcional, mas recomendado para desenvolvimento)
+⏰ Saldo Líquido
+✅ +6 (resolveu mais que criou)
 
-1. 🔑 Variáveis de Ambiente
-Crie um arquivo .env na raiz do projeto com as seguintes variáveis:
+[📂 Ver por Usuário] [⚠️ Issues Antigas]
+```
 
-DISCORD_BOT_TOKEN="SEU_TOKEN_DO_DISCORD"
-YOUTRACK_TOKEN="SEU_TOKEN_DE_WEBHOOK_DO_YOUTRACK"
-YOUTRACK_URL="https://seu-dominio.youtrack.cloud"
-DISCORD_CHANNEL_ID="ID_DO_CANAL_DO_DISCORD"
-WEBHOOK_PORT=3000
+---
 
-2. 📦 Instalação das Dependências
-Instale todas as dependências do projeto usando o npm:
+## 📥 Instalação
 
+### Pré-requisitos
+- **Node.js** 16+ 
+- **YouTrack** Server/Cloud com API access
+- **Discord Bot** com permissões adequadas
+- **ngrok** ou servidor público para webhooks
+
+### 1️⃣ Clone o repositório
+```bash
+git clone https://github.com/seu-usuario/youtrack-discord-bot.git
+cd youtrack-discord-bot
+```
+
+### 2️⃣ Instale as dependências
+```bash
 npm install
+```
 
-3. 👥 Configuração do Mapeamento de Usuários
-O bot utiliza o arquivo userMap.json para mapear IDs de usuários do Discord para logins de usuários do YouTrack. Adicione os usuários relevantes neste arquivo:
+### 3️⃣ Configure o ambiente
+```bash
+# Copie e configure o arquivo .env
+cp .env.example .env
+```
 
+### 4️⃣ Configure o package.json
+```json
 {
-  "ID_DO_USUARIO_DISCORD_1": "login.youtrack.1",
-  "ID_DO_USUARIO_DISCORD_2": "login.youtrack.2"
+  "name": "youtrack-discord-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.0.0",
+    "express": "^4.18.0",
+    "axios": "^1.5.0",
+    "dotenv": "^16.0.0"
+  }
 }
+```
 
-4. 🔗 Configuração do Webhook no YouTrack
-Exponha seu servidor local à internet usando ngrok: ngrok http 3000. Copie o URL gerado.
+### 5️⃣ Execute o bot
+```bash
+npm start
+```
 
-No seu projeto do YouTrack, vá em Project Settings > Workflows > Webhooks.
+---
 
-Adicione um novo webhook com o URL do ngrok (ex: https://seu-url-ngrok.ngrok-free.app/webhook).
+## ⚙️ Configuração
 
-Certifique-se de que o webhook está configurado para enviar eventos de issue created e issue updated com a opção summary marcada.
+### 🔐 Variáveis de Ambiente (.env)
+```env
+# Discord
+DISCORD_BOT_TOKEN="MTQwMjY2MDc1NzA3MzgyMTc3Ng.GiAiFQ.exemplo"
+DISCORD_CHANNEL_ID="1402360170834694327"
 
-Adicione um cabeçalho de autenticação personalizado x-youtrack-webhook-auth com o valor do YOUTRACK_TOKEN que você definiu no seu .env.
+# YouTrack
+YOUTRACK_TOKEN="perm:dXNlcg==.VG9rZW4=.exemplo"
+YOUTRACK_URL="https://sua-instancia.youtrack.cloud"
 
-▶️ Como Executar
-💻 Modo de Desenvolvimento (com nodemon)
+# Webhook
+WEBHOOK_PORT=3000
+```
+
+### 👥 Mapeamento de Usuários (userMap.json)
+```json
+{
+  "123456789012345678": "joao.silva",
+  "987654321098765432": "maria.santos",
+  "456789123456789123": "pedro.costa"
+}
+```
+*Mapeamento Discord User ID → YouTrack Login*
+
+### 🎯 Configuração do YouTrack Workflow
+
+**1. Crie um novo workflow no YouTrack**
+```javascript
+const entities = require("@jetbrains/youtrack-scripting-api/entities");
+const http = require("@jetbrains/youtrack-scripting-api/http");
+
+exports.rule = entities.Issue.onChange({
+    title: "Discord Webhook Integration",
+    guard: (ctx) => ctx.issue.isReported || ctx.issue.isResolved,
+    action: (ctx) => {
+        const webhookData = {
+            issueId: extractIssueId(ctx.issue.url),
+            title: `${ctx.issue.becomesReported ? '🆕' : '✅'} Issue ${issueId}: ${ctx.issue.summary}`,
+            url: ctx.issue.url,
+            description: ctx.issue.description || 'Sem descrição',
+            userVisibleName: ctx.currentUser.visibleName,
+            statusChange: ctx.issue.becomesReported ? 'created' : 'resolved'
+        };
+        
+        const connection = new http.Connection('SUA_URL_NGROK/webhook');
+        connection.postSync('', null, JSON.stringify(webhookData));
+    }
+});
+```
+
+**2. Configure o ngrok para desenvolvimento**
+```bash
+ngrok http 3000
+# Use a URL HTTPS gerada no workflow
+```
+
+---
+
+## 🚀 Uso
+
+### 💬 Comandos Slash
+
+#### `/youtrack report`
+Gera relatórios detalhados de produtividade
+
+**Parâmetros:**
+- `tipo`: `daily` (diário) ou `weekly` (semanal)
+- `projeto`: ID do projeto (opcional)
+
+**Exemplos:**
+```
+/youtrack report tipo:daily
+/youtrack report tipo:weekly projeto:PROJ1
+```
+
+### 🎛️ Botões Interativos
+
+| Botão | Função | Descrição |
+|-------|--------|-----------|
+| 👤 **Atribuir para mim** | Atribuição | Atribui a issue para o usuário que clicou |
+| 🔄 **Alterar Estado** | Estados | Abre menu para seleção de novo estado |
+| 💬 **Comentar** | Comentário | Modal para comentário personalizado |
+| ⚡ **Comentários Rápidos** | Templates | Menu com respostas pré-definidas |
+
+### 📝 Templates de Comentários
+
+- **❓ Needs Info** - Solicitar informações adicionais
+- **🔄 Duplicate** - Marcar como duplicada
+- **✅ Not Bug** - Comportamento esperado
+- **🚧 In Progress** - Comunicar início do desenvolvimento
+- **🧪 Testing** - Sinalizar que está pronto para testes
+- **✅ Resolved** - Confirmar resolução
+
+---
+
+## 📊 Relatórios
+
+### 📅 Relatório Diário
+
+**Métricas incluídas:**
+- Issues criadas vs resolvidas no dia
+- Saldo líquido de produtividade
+- Total de issues em andamento
+- Alertas de issues antigas (+7 dias sem atualização)
+
+**Drill-downs disponíveis:**
+- Detalhamento por usuário
+- Lista de issues antigas
+
+### 📈 Relatório Semanal
+
+**Análises incluídas:**
+- Tendências de criação/resolução
+- Comparação com semana anterior
+- Top performers da equipe
+- Issues críticas em aberto
+
+**Funcionalidades extras:**
+- Cálculo automático de produtividade por usuário
+- Identificação de tendências (alta/baixa/estável)
+- Alertas de issues críticas não resolvidas
+
+---
+
+## 🔧 Desenvolvimento
+
+### 🏗️ Arquitetura
+
+```
+YouTrack Workflow → ngrok → Express Server → Discord Bot → Canal Discord
+                                ↓
+                         Interações de botões
+                                ↓
+                         YouTrack REST API
+```
+
+### 🧪 Testing Local
+
+```bash
+# Terminal 1: Execute o bot
 npm run dev
 
-🚀 Modo de Produção
-npm start
+# Terminal 2: Expose via ngrok
+ngrok http 3000
+
+# Terminal 3: Teste as APIs
+curl -X POST http://localhost:3000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"issueId":"TEST-1","title":"Teste","url":"#"}'
+```
+
+### 🐛 Debug Common Issues
+
+**1. Warning "MODULE_TYPELESS_PACKAGE_JSON"**
+```json
+// Adicione no package.json
+{
+  "type": "module"
+}
+```
+
+**2. Erro "updated: ..date" inválido**
+```javascript
+// ❌ Incorreto
+updated: ..2025-07-31
+
+// ✅ Correto  
+updated: * .. 2025-07-31
+```
+
+**3. Commands API vs CustomFields API**
+```javascript
+// O bot usa fallback automático:
+// 1. Tenta Commands API (mais robusta)
+// 2. Se falhar, usa CustomFields API
+// 3. Logs detalhados para debug
+```
+
+---
+
+## 📈 Roadmap
+
+### 🔴 **Alta Prioridade**
+- [x] Sistema de comentários rápidos
+- [x] Relatórios automáticos com comandos slash
+- [ ] Notificações de menções em comentários
+- [ ] Sistema de aprovação para issues críticas
+
+### 🟡 **Média Prioridade**
+- [ ] Threads automáticas para discussão
+- [ ] Templates de resposta customizáveis
+- [ ] Integração com calendário de sprints
+- [ ] Dashboard web complementar
+
+### 🟢 **Baixa Prioridade**
+- [ ] Comandos de voz para criação de issues
+- [ ] Integração com Jira (migração)
+- [ ] Analytics avançados com ML
+- [ ] Mobile app companion
+
+---
+
+## 🤝 Contribuição
+
+### 🌟 Como Contribuir
+
+1. **Fork** o projeto
+2. **Clone** seu fork: `git clone https://github.com/seu-usuario/youtrack-discord-bot.git`
+3. **Crie** uma branch: `git checkout -b feature/nova-funcionalidade`
+4. **Commit** suas mudanças: `git commit -m 'feat: adiciona nova funcionalidade'`
+5. **Push** para a branch: `git push origin feature/nova-funcionalidade`
+6. **Abra** um Pull Request
+
+### 📝 Padrões de Commit
+
+```
+feat: nova funcionalidade
+fix: correção de bug
+docs: atualização de documentação
+style: mudanças de formatação
+refactor: refatoração de código
+test: adição/correção de testes
+chore: tarefas de manutenção
+```
+
+### 🧪 Guidelines
+
+- **Testes**: Adicione testes para novas funcionalidades
+- **Docs**: Mantenha a documentação atualizada
+- **Lint**: Use `npm run lint` antes de commitar
+- **Conventional Commits**: Siga os padrões de commit
+
+---
+
+## 📄 Licença
+
+Este projeto está licenciado sob a **MIT License** - veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+---
+
+## 🙋‍♂️ Suporte
+
+### 🆘 Precisa de Ajuda?
+
+- **📖 Wiki**: [Documentação completa](../../wiki)
+- **🐛 Bug Reports**: [Issues](../../issues)
+- **💬 Discussões**: [Discussions](../../discussions)
+- **📧 Email**: suporte@exemplo.com
+
+### 📊 Status do Projeto
+
+- **🟢 Estável**: Sistema de notificações e controles
+- **🟡 Beta**: Sistema de relatórios avançados  
+- **🔴 Desenvolvimento**: Analytics e ML features
+
+---
+
+<div align="center">
+
+**⭐ Se este projeto te ajudou, considere dar uma estrela!**
+
+Made with ❤️ by [Seu Nome](https://github.com/seu-usuario)
+
+</div>
