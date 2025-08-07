@@ -41,6 +41,23 @@ try {
     fs.writeFileSync('userMap.json', JSON.stringify(userMap, null, 2));
 }
 
+// Carregar configuração de estados
+let appConfig = {};
+try {
+    const configData = fs.readFileSync('config.json', 'utf8');
+    appConfig = JSON.parse(configData);
+} catch (error) {
+    console.log('config.json não encontrado, criando arquivo de exemplo...');
+    appConfig = {
+        "youtrack_states": {
+            "in_progress": ["CORRECTION", "IN DEVELOPMENT", "READY TO REVIEW", "REVIEWING", "APPROVED"],
+            "resolved": ["CLOSED", "DONE"],
+            "backlog": ["BACKLOG", "OPEN"]
+        }
+    };
+    fs.writeFileSync('config.json', JSON.stringify(appConfig, null, 2));
+}
+
 // Cache para estados de projeto
 const projectStatesCache = new Map();
 
@@ -83,7 +100,8 @@ const REPORT_CONFIG = {
         monthly: 0xff9900,    // Laranja
         critical: 0xff0000,   // Vermelho
         warning: 0xffff00,    // Amarelo
-        success: 0x00ff00     // Verde
+        success: 0x00ff00,     // Verde
+        danger: 0xff0000
     },
     emojis: {
         report: '📊',
@@ -116,38 +134,63 @@ class YouTrackDashboardEngine {
         };
     }
 
-    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,criada,atualizada,data de resolução,reporter(login,name),assignee(login,name),estado(name),type(name),prioridade(name)') {
+    async _request(method, endpoint, options = {}) {
+        const url = `${this.youtrackUrl}${endpoint}`;
         try {
-            const response = await axios.get(`${this.youtrackUrl}/api/issues`, {
-                headers: this.headers,
-                params: {
-                    query: query,
-                    fields: fields,
-                    '$top': 1000 // Limite alto para análises
-                }
-            });
-            return response.data || [];
+            const response = await axios({ method, url, headers: this.headers, ...options });
+            return response.data;
         } catch (error) {
-            console.error('Erro ao buscar issues:', error.response?.data || error.message);
-            return [];
+            const errorInfo = {
+                message: 'Falha na comunicação com a API do YouTrack.',
+                method,
+                url,
+                status: error.response?.status,
+                details: error.response?.data?.error_description || error.response?.data?.error || error.message,
+                query: options.params?.query
+            };
+            console.error('YouTrack API Error (Report Engine):', JSON.stringify(errorInfo, null, 2));
+            const customError = new Error(errorInfo.details || errorInfo.message);
+            customError.status = errorInfo.status;
+            throw customError;
         }
     }
 
+    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),state(name),type(name),priority(name)') {
+        // Agora usa o manipulador centralizado. Erros irão propagar para o chamador do relatório.
+        const data = await this._request('get', '/api/issues', {
+            params: {
+                query: query,
+                fields: fields,
+                '$top': 1000 // Limite alto para análises
+            }
+        });
+        return data || [];
+    }
+
     async getDailyMetrics(projectId = null) {
-        const baseQuery = projectId ? `projeto: {${projectId}}` : '';
+        const today = new Date().toISOString().split('T')[0];
+        const baseQuery = projectId ? `project: {${projectId}}` : '';
+
+        const resolvedStatesQuery = appConfig.youtrack_states.resolved.map(s => `-{${s}}`).join(' ');
+        const inProgressStatesQuery = appConfig.youtrack_states.in_progress.map(s => `State: {${s}}`).join(' OR ');
+        const allOpenStates = [...appConfig.youtrack_states.backlog, ...appConfig.youtrack_states.in_progress];
+        const totalOpenStatesQuery = allOpenStates.map(s => `State: {${s}}`).join(' OR ');
         
+        const createdTodayQuery = `${baseQuery} created: ${today}`;
+        const resolvedTodayQuery = `${baseQuery} resolved date: ${today}`;
+        const totalOpenQuery = `${baseQuery} ${totalOpenStatesQuery}`;
+        const inProgressQuery = `${baseQuery} ${inProgressStatesQuery}`;
+
         const [createdToday, resolvedToday, totalOpen, inProgress] = await Promise.all([
-            this.getIssuesWithFilters(`${baseQuery} criada: Hoje`),
-            // Deixamos a query `data de resolução: Hoje` pois ela parece funcionar para o seu caso.
-            this.getIssuesWithFilters(`${baseQuery} data de resolução: Hoje`),
-            // CORREÇÃO: Usamos a sintaxe padrão `#Unresolved` para encontrar issues não resolvidas.
-            this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
-            // Manter a definição de "Em andamento" que você confirmou
-            this.getIssuesWithFilters(`${baseQuery} estado: {OPEN} OR estado: {IN DEVELOPMENT} OR estado: {CORRECTION} OR estado: {READY TO REVIEW} OR estado: {REVIEWING} OR estado: {APPROVED}`)
+            this.getIssuesWithFilters(createdTodayQuery),
+            this.getIssuesWithFilters(resolvedTodayQuery),
+            this.getIssuesWithFilters(totalOpenQuery),
+            this.getIssuesWithFilters(inProgressQuery)
         ]);
 
-        // Issues antigas (não atualizadas na semana atual)
-        const staleIssues = await this.getIssuesWithFilters(`${baseQuery} not atualizada: {Esta semana} #Unresolved`);
+        // Issues antigas (>7 dias sem update)
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const staleIssues = await this.getIssuesWithFilters(`${baseQuery} atualizada: * .. ${weekAgo} State: ${resolvedStatesQuery}`);
 
         return {
             createdToday: createdToday.length,
@@ -166,24 +209,41 @@ class YouTrackDashboardEngine {
     }
 
     async getWeeklyMetrics(projectId = null) {
-        const baseQuery = projectId ? `projeto: {${projectId}}` : '';
+        const today = new Date();
+        const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000);
+        const twoWeeksAgo = new Date(today - 14 * 24 * 60 * 60 * 1000);
+        
+        const formatDate = (date) => date.toISOString().split('T')[0];
+        const baseQuery = projectId ? `project: {${projectId}}` : '';
+        const resolvedStatesQuery = appConfig.youtrack_states.resolved.map(s => `-{${s}}`).join(' ');
 
-        // Usando a sintaxe de data relativa do YouTrack para a semana atual
-        const [thisWeekCreated, thisWeekResolved, criticalIssues] = await Promise.all([
-            this.getIssuesWithFilters(`${baseQuery} criada: {Esta semana}`),
-            // Deixamos a query `data de resolução: {Esta semana}` pois ela parece funcionar.
-            this.getIssuesWithFilters(`${baseQuery} data de resolução: {Esta semana}`),
-            // CORREÇÃO: Combinamos a prioridade com a sintaxe padrão `#Unresolved`
-            this.getIssuesWithFilters(`${baseQuery} (Prioridade: {Critical} OR Prioridade: {High}) #Unresolved`)
+        const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, criticalIssues] = await Promise.all([
+            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(weekAgo)}..${formatDate(today)}`),
+            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(weekAgo)}..${formatDate(today)}`),
+            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
+            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
+            this.getIssuesWithFilters(`${baseQuery} priority: {Critical} OR priority: {High} State: ${resolvedStatesQuery}`)
         ]);
 
         // Análise por usuário
         const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
         
+        // Cálculo de tendências
+        const createdTrend = this.calculateTrend(lastWeekCreated.length, thisWeekCreated.length);
+        const resolvedTrend = this.calculateTrend(lastWeekResolved.length, thisWeekResolved.length);
+
         return {
             thisWeek: {
                 created: thisWeekCreated.length,
                 resolved: thisWeekResolved.length
+            },
+            lastWeek: {
+                created: lastWeekCreated.length,
+                resolved: lastWeekResolved.length
+            },
+            trends: {
+                created: createdTrend,
+                resolved: resolvedTrend
             },
             criticalOpen: criticalIssues.length,
             userMetrics,
@@ -275,8 +335,8 @@ class ReportTemplateEngine {
         });
 
         // Saldo líquido
-        const netChangeEmoji = metrics.netChange > 0 ? emojis.trend_up : 
-                              metrics.netChange < 0 ? emojis.trend_down : '➖';
+        const netChangeEmoji = metrics.netChange > 0 ? emojis.warning : 
+                              metrics.netChange < 0 ? emojis.done : '➖';
         const netChangeText = metrics.netChange > 0 ? `+${metrics.netChange} (criou mais que resolveu)` :
                              metrics.netChange < 0 ? `${metrics.netChange} (resolveu mais que criou)` :
                              '0 (equilibrio)';
@@ -301,17 +361,18 @@ class ReportTemplateEngine {
 
     createWeeklyTemplate(metrics, projectName = 'Todos os Projetos') {
         const { emojis, colors } = REPORT_CONFIG;
+        const weekRange = this.getWeekRange();
         
         const embed = new EmbedBuilder()
             .setTitle(`${emojis.sprint} Relatório Semanal - ${projectName}`)
-            .setDescription(`${emojis.calendar} **Esta Semana**`)
+            .setDescription(`${emojis.calendar} **${weekRange}**`)
             .setColor(colors.weekly)
             .setTimestamp();
 
         // Performance da semana
         const performanceValue = [
-            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created}`,
-            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved}`,
+            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created} ${this.getTrendEmoji(metrics.trends.created)}`,
+            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved} ${this.getTrendEmoji(metrics.trends.resolved)}`,
             `${emojis.critical} **Críticas abertas:** ${metrics.criticalOpen}`
         ].join('\n');
 
@@ -319,6 +380,18 @@ class ReportTemplateEngine {
             name: `${emojis.trend_up} Performance da Semana`,
             value: performanceValue,
             inline: false
+        });
+
+        // Comparação com semana anterior
+        const comparisonValue = [
+            `Criadas: **${metrics.lastWeek.created}** → **${metrics.thisWeek.created}**`,
+            `Resolvidas: **${metrics.lastWeek.resolved}** → **${metrics.thisWeek.resolved}**`
+        ].join('\n');
+
+        embed.addFields({
+            name: `${emojis.clock} vs. Semana Anterior`,
+            value: comparisonValue,
+            inline: true
         });
 
         // Top performers
@@ -350,8 +423,7 @@ class ReportTemplateEngine {
             .setColor(colors.weekly)
             .setTimestamp();
 
-        // Garantir que userMetrics seja um array antes de ordenar
-        const userDetails = (Array.isArray(userMetrics) ? userMetrics : [])
+        const userDetails = userMetrics
             .sort((a, b) => b.productivity - a.productivity)
             .map(user => {
                 const productivityEmoji = user.productivity > 0 ? emojis.trend_up :
@@ -449,11 +521,11 @@ class YouTrackReportSystem {
         const buttons = new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_users_daily`)
+                    .setCustomId(`report_drill_users_daily_${projectId || 'all'}`)
                     .setLabel('📂 Ver por Usuário')
                     .setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_issues_stale`)
+                    .setCustomId(`report_drill_issues_stale_${projectId || 'all'}`)
                     .setLabel('⚠️ Issues Antigas')
                     .setStyle(ButtonStyle.Danger)
                     .setDisabled(metrics.staleIssues === 0)
@@ -478,11 +550,11 @@ class YouTrackReportSystem {
         const buttons = new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_users_weekly`)
+                    .setCustomId(`report_drill_users_weekly_${projectId || 'all'}`)
                     .setLabel('👥 Detalhamento por Usuário')
                     .setStyle(ButtonStyle.Primary),
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_critical`)
+                    .setCustomId(`report_drill_critical_${projectId || 'all'}`)
                     .setLabel('🔴 Issues Críticas')
                     .setStyle(ButtonStyle.Danger)
                     .setDisabled(metrics.criticalOpen === 0)
@@ -492,13 +564,39 @@ class YouTrackReportSystem {
     }
 
     async generateUserDetailReport(userMetrics, period) {
-        const embed = this.templates.generateReport('user_detail', userMetrics, period);
+        const embed = this.templates.generateReport('user_detail', { userMetrics }, period);
         return { embed, components: [] };
     }
 }
 
 // Instância do sistema de relatórios (será inicializada após as variáveis estarem carregadas)
 let reportSystem;
+
+// ==========================================
+// HELPER DE API PARA INTERAÇÕES
+// ==========================================
+
+async function youtrackApiRequest(method, endpoint, options = {}) {
+    const url = `${YOUTRACK_URL}${endpoint}`;
+    try {
+        const response = await axios({
+            method,
+            url,
+            headers: { 'Authorization': `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' },
+            ...options
+        });
+        return { success: true, data: response.data };
+    } catch (error) {
+        const errorInfo = {
+            message: error.response?.data?.error_description || error.response?.data?.error || error.message,
+            status: error.response?.status,
+            method,
+            url
+        };
+        console.error('YouTrack API Error (Interaction):', JSON.stringify(errorInfo, null, 2));
+        return { success: false, error: errorInfo };
+    }
+}
 
 // ==========================================
 // FUNÇÕES EXISTENTES
@@ -553,47 +651,32 @@ async function getProjectStates(projectId) {
 
 // Função para atribuir issue
 async function assignIssue(issueId, userLogin) {
-    try {
-        const commandPayload = {
-            query: `Assignee ${userLogin}`,
-            issues: [{ idReadable: issueId }]
-        };
-        
-        await axios.post(`${YOUTRACK_URL}/api/commands`, commandPayload, {
-            headers: {
-                Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                'Content-Type': 'application/json'
-            }
-        });
-        
+    const commandPayload = {
+        query: `Assignee ${userLogin}`,
+        issues: [{ idReadable: issueId }]
+    };
+    
+    let result = await youtrackApiRequest('post', '/api/commands', { data: commandPayload });
+
+    if (result.success) {
         console.log(`Issue ${issueId} atribuída para ${userLogin} via Commands API`);
         return true;
-        
-    } catch (error) {
-        console.error('Erro Commands API, tentando método alternativo:', error.response?.data || error.message);
-        
-        try {
-            await axios.post(`${YOUTRACK_URL}/api/issues/${issueId}`, {
-                customFields: [{
-                    name: 'Assignee',
-                    '$type': 'SingleUserIssueCustomField',
-                    value: { login: userLogin }
-                }]
-            }, {
-                headers: {
-                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
-            });
-            
-            console.log(`Issue ${issueId} atribuída para ${userLogin} via customFields`);
-            return true;
-            
-        } catch (fallbackError) {
-            console.error('Erro ao atribuir issue (ambos métodos falharam):', fallbackError.response?.data || fallbackError.message);
-            return false;
-        }
     }
+
+    // Fallback para o método de customFields
+    console.log('Erro na Commands API, tentando método alternativo (customFields)...');
+    const customFieldPayload = {
+        customFields: [{ name: 'Assignee', '$type': 'SingleUserIssueCustomField', value: { login: userLogin } }]
+    };
+    result = await youtrackApiRequest('post', `/api/issues/${issueId}`, { data: customFieldPayload });
+
+    if (result.success) {
+        console.log(`Issue ${issueId} atribuída para ${userLogin} via customFields`);
+        return true;
+    }
+    
+    console.error('Erro ao atribuir issue (ambos métodos falharam):', result.error);
+    return false;
 }
 
 // Função para mudar estado da issue
@@ -1022,7 +1105,10 @@ async function handleReportCommand(interaction) {
         
     } catch (error) {
         console.error('Erro ao gerar relatório:', error);
-        await interaction.editReply('❌ Erro ao gerar relatório. Tente novamente.');
+        await interaction.editReply({
+            content: `❌ **Erro ao gerar relatório:**\n${error.message}\n\nPor favor, verifique os logs do bot para mais detalhes.`,
+            ephemeral: true
+        });
     }
 }
 
@@ -1030,22 +1116,66 @@ async function handleReportDrillDown(interaction) {
     await interaction.deferReply({ flags: 64 });
     
     try {
-        const action = interaction.customId.split('_')[2];
-        const period = interaction.customId.split('_')[3];
+        const parts = interaction.customId.split('_');
+        const action = parts[2];
+        const period = parts[3];
+        const projectId = parts[4] === 'all' ? null : parts[4];
+        
+        let result;
         
         if (action === 'users') {
-            const cacheKey = reportSystem.cache.getCacheKey(period, null);
+            const cacheKey = reportSystem.cache.getCacheKey(period, projectId);
             const cachedMetrics = reportSystem.cache.get(cacheKey);
             
             if (cachedMetrics && cachedMetrics.userMetrics) {
-                const result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
+                result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
                 await interaction.editReply({
                     embeds: [result.embed],
-                    components: [result.components]
+                    components: result.components
                 });
             } else {
                 await interaction.editReply('❌ Dados não disponíveis. Execute o relatório principal primeiro.');
             }
+        } else if (action === 'issues' && period === 'stale') {
+            const cacheKey = reportSystem.cache.getCacheKey('daily', projectId);
+            const cachedMetrics = reportSystem.cache.get(cacheKey);
+
+            if (cachedMetrics && cachedMetrics.issues.stale.length > 0) {
+                const issues = cachedMetrics.issues.stale;
+                const description = issues.map(issue => `**[${issue.idReadable}](${YOUTRACK_URL}/issue/${issue.idReadable})** - ${issue.summary}`).join('\n');
+                
+                const embed = new EmbedBuilder()
+                    .setTitle('⚠️ Issues Antigas')
+                    .setDescription(description || 'Nenhuma issue antiga encontrada.')
+                    .setColor(REPORT_CONFIG.colors.danger);
+                
+                await interaction.editReply({
+                    embeds: [embed],
+                    components: []
+                });
+            } else {
+                await interaction.editReply('❌ Nenhuma issue antiga encontrada ou dados não disponíveis.');
+            }
+        } else if (action === 'critical') {
+             const cacheKey = reportSystem.cache.getCacheKey('weekly', projectId);
+             const cachedMetrics = reportSystem.cache.get(cacheKey);
+
+             if (cachedMetrics && cachedMetrics.issues.critical.length > 0) {
+                 const issues = cachedMetrics.issues.critical;
+                 const description = issues.map(issue => `**[${issue.idReadable}](${YOUTRACK_URL}/issue/${issue.idReadable})** - ${issue.summary}`).join('\n');
+                 
+                 const embed = new EmbedBuilder()
+                     .setTitle('🔴 Issues Críticas Abertas')
+                     .setDescription(description || 'Nenhuma issue crítica encontrada.')
+                     .setColor(REPORT_CONFIG.colors.critical);
+                 
+                 await interaction.editReply({
+                     embeds: [embed],
+                     components: []
+                 });
+             } else {
+                 await interaction.editReply('❌ Nenhuma issue crítica encontrada ou dados não disponíveis.');
+             }
         }
         
     } catch (error) {

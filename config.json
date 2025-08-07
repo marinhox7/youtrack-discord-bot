@@ -1,0 +1,37 @@
+{
+  "youtrack_states": {
+    "in_progress": [
+      "CORRECTION",
+      "IN DEVELOPMENT",
+      "READY TO REVIEW",
+      "REVIEWING",
+      "APPROVED",
+      "Em Andamento",
+      "Para verificar",
+      "STAGING",
+      "EM ABERTO",
+      "PAUSED",
+      "REABERTA",
+      "PENDENTE",
+      "RESPONDIDA",
+      "VERIFICADA",
+      "Aguardando retorno",
+      "Atualização necessária"
+    ],
+    "resolved": [
+      "CLOSED",
+      "DONE",
+      "MOVED TO NEXT SPRINT",
+      "INCOMPLETA",
+      "DUPLICADA",
+      "NÃO REPRODUZÍVEL",
+      "RESOLVIDA",
+      "PRODUCTION",
+      "Duplicada"
+    ],
+    "backlog": [
+      "BACKLOG",
+      "OPEN"
+    ]
+  }
+}
