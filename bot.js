@@ -134,6 +134,15 @@ class YouTrackDashboardEngine {
         };
     }
 
+    _formatStateValue(state) {
+        // Se o estado contiver espaços, envolva-o em chaves.
+        // O YouTrack também aceita aspas duplas.
+        if (/\s/.test(state)) {
+            return `{${state}}`;
+        }
+        return state;
+    }
+
     async _request(method, endpoint, options = {}) {
         const url = `${this.youtrackUrl}${endpoint}`;
         try {
@@ -155,6 +164,10 @@ class YouTrackDashboardEngine {
         }
     }
 
+    _buildQuery(...parts) {
+        return parts.filter(Boolean).join(' AND ');
+    }
+
     async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),state(name),type(name),priority(name)') {
         // Agora usa o manipulador centralizado. Erros irão propagar para o chamador do relatório.
         const data = await this._request('get', '/api/issues', {
@@ -171,15 +184,17 @@ class YouTrackDashboardEngine {
         const today = new Date().toISOString().split('T')[0];
         const baseQuery = projectId ? `project: {${projectId}}` : '';
 
-        const resolvedStatesQuery = appConfig.youtrack_states.resolved.map(s => `-{${s}}`).join(' ');
-        const inProgressStatesQuery = appConfig.youtrack_states.in_progress.map(s => `State: {${s}}`).join(' OR ');
+        // Correção: Usar a sintaxe de consulta correta para estados
+        const resolvedStatesQuery = appConfig.youtrack_states.resolved.map(s => `State: -${this._formatStateValue(s)}`).join(' AND ');
+        const inProgressStatesQuery = `State: ${appConfig.youtrack_states.in_progress.map(s => this._formatStateValue(s)).join(', ')}`;
         const allOpenStates = [...appConfig.youtrack_states.backlog, ...appConfig.youtrack_states.in_progress];
-        const totalOpenStatesQuery = allOpenStates.map(s => `State: {${s}}`).join(' OR ');
-        
-        const createdTodayQuery = `${baseQuery} created: ${today}`;
-        const resolvedTodayQuery = `${baseQuery} resolved date: ${today}`;
-        const totalOpenQuery = `${baseQuery} ${totalOpenStatesQuery}`;
-        const inProgressQuery = `${baseQuery} ${inProgressStatesQuery}`;
+        const totalOpenStatesQuery = `State: ${allOpenStates.map(s => this._formatStateValue(s)).join(', ')}`;
+
+        // Correção: Usar a sintaxe de consulta correta para datas
+        const createdTodayQuery = this._buildQuery(baseQuery, `created: {${today}}`);
+        const resolvedTodayQuery = this._buildQuery(baseQuery, `resolved: {${today}}`);
+        const totalOpenQuery = this._buildQuery(baseQuery, totalOpenStatesQuery);
+        const inProgressQuery = this._buildQuery(baseQuery, inProgressStatesQuery);
 
         const [createdToday, resolvedToday, totalOpen, inProgress] = await Promise.all([
             this.getIssuesWithFilters(createdTodayQuery),
@@ -190,7 +205,10 @@ class YouTrackDashboardEngine {
 
         // Issues antigas (>7 dias sem update)
         const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const staleIssues = await this.getIssuesWithFilters(`${baseQuery} atualizada: * .. ${weekAgo} State: ${resolvedStatesQuery}`);
+        const staleIssuesQuery = this._buildQuery(baseQuery, `updated: * .. {${weekAgo}}`, resolvedStatesQuery);
+        const staleIssues = await this.getIssuesWithFilters(staleIssuesQuery);
+
+        const userMetrics = this.analyzeByUser(createdToday, resolvedToday);
 
         return {
             createdToday: createdToday.length,
@@ -198,6 +216,8 @@ class YouTrackDashboardEngine {
             totalOpen: totalOpen.length,
             inProgress: inProgress.length,
             staleIssues: staleIssues.length,
+            staleIssuesQuery,
+            userMetrics,
             netChange: createdToday.length - resolvedToday.length,
             issues: {
                 created: createdToday,
@@ -209,21 +229,49 @@ class YouTrackDashboardEngine {
     }
 
     async getWeeklyMetrics(projectId = null) {
+        console.log(`[DEBUG] getWeeklyMetrics: Iniciando para o projeto: ${projectId || 'Todos'}`);
         const today = new Date();
-        const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000);
-        const twoWeeksAgo = new Date(today - 14 * 24 * 60 * 60 * 1000);
-        
+        const weekAgo = new Date(today);
+        weekAgo.setDate(today.getDate() - 7);
+        const twoWeeksAgo = new Date(today);
+        twoWeeksAgo.setDate(today.getDate() - 14);
+
         const formatDate = (date) => date.toISOString().split('T')[0];
+
+        const currentPeriodStart = formatDate(weekAgo);
+        const currentPeriodEnd = formatDate(today);
+        const previousPeriodStart = formatDate(twoWeeksAgo);
+        const previousPeriodEnd = formatDate(weekAgo);
+
+        console.log(`[DEBUG] getWeeklyMetrics: Período atual: ${currentPeriodStart} a ${currentPeriodEnd}`);
+        console.log(`[DEBUG] getWeeklyMetrics: Período anterior: ${previousPeriodStart} a ${previousPeriodEnd}`);
+
         const baseQuery = projectId ? `project: {${projectId}}` : '';
-        const resolvedStatesQuery = appConfig.youtrack_states.resolved.map(s => `-{${s}}`).join(' ');
+
+        // Correção: Usar a sintaxe de consulta de data correta e garantir que os estados sejam tratados como strings literais
+        const allOpenStates = [...appConfig.youtrack_states.backlog, ...appConfig.youtrack_states.in_progress];
+        const openStatesQuery = `State: ${allOpenStates.map(s => this._formatStateValue(s)).join(', ')}`;
+        const criticalIssuesQuery = this._buildQuery(baseQuery, `priority: Critical, High`, openStatesQuery);
+
+        const queryThisWeekCreated = this._buildQuery(baseQuery, `created: {${currentPeriodStart}} .. {${currentPeriodEnd}}`);
+        const queryThisWeekResolved = this._buildQuery(baseQuery, `resolved: {${currentPeriodStart}} .. {${currentPeriodEnd}}`);
+        const queryLastWeekCreated = this._buildQuery(baseQuery, `created: {${previousPeriodStart}} .. {${previousPeriodEnd}}`);
+        const queryLastWeekResolved = this._buildQuery(baseQuery, `resolved: {${previousPeriodStart}} .. {${previousPeriodEnd}}`);
+
+        console.log(`[DEBUG] getWeeklyMetrics: Query 'Criadas nesta semana': ${queryThisWeekCreated}`);
+        console.log(`[DEBUG] getWeeklyMetrics: Query 'Resolvidas nesta semana': ${queryThisWeekResolved}`);
+        console.log(`[DEBUG] getWeeklyMetrics: Query 'Críticas abertas': ${criticalIssuesQuery}`);
 
         const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, criticalIssues] = await Promise.all([
-            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(weekAgo)}..${formatDate(today)}`),
-            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(weekAgo)}..${formatDate(today)}`),
-            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
-            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
-            this.getIssuesWithFilters(`${baseQuery} priority: {Critical} OR priority: {High} State: ${resolvedStatesQuery}`)
+            this.getIssuesWithFilters(queryThisWeekCreated),
+            this.getIssuesWithFilters(queryThisWeekResolved),
+            this.getIssuesWithFilters(queryLastWeekCreated),
+            this.getIssuesWithFilters(queryLastWeekResolved),
+            this.getIssuesWithFilters(criticalIssuesQuery)
         ]);
+
+        console.log(`[DEBUG] getWeeklyMetrics: Resultados da API - Criadas: ${thisWeekCreated.length}, Resolvidas: ${thisWeekResolved.length}, Críticas: ${criticalIssues.length}`);
+        console.log(`[DEBUG] getWeeklyMetrics: Resultados da API (semana passada) - Criadas: ${lastWeekCreated.length}, Resolvidas: ${lastWeekResolved.length}`);
 
         // Análise por usuário
         const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
@@ -231,8 +279,9 @@ class YouTrackDashboardEngine {
         // Cálculo de tendências
         const createdTrend = this.calculateTrend(lastWeekCreated.length, thisWeekCreated.length);
         const resolvedTrend = this.calculateTrend(lastWeekResolved.length, thisWeekResolved.length);
+        console.log(`[DEBUG] getWeeklyMetrics: Tendência de criação: ${createdTrend}, Tendência de resolução: ${resolvedTrend}`);
 
-        return {
+        const finalMetrics = {
             thisWeek: {
                 created: thisWeekCreated.length,
                 resolved: thisWeekResolved.length
@@ -246,6 +295,7 @@ class YouTrackDashboardEngine {
                 resolved: resolvedTrend
             },
             criticalOpen: criticalIssues.length,
+            criticalIssuesQuery,
             userMetrics,
             issues: {
                 created: thisWeekCreated,
@@ -253,6 +303,8 @@ class YouTrackDashboardEngine {
                 critical: criticalIssues
             }
         };
+        console.log('[DEBUG] getWeeklyMetrics: Métricas finais montadas.');
+        return finalMetrics;
     }
 
     analyzeByUser(createdIssues, resolvedIssues) {
@@ -415,29 +467,45 @@ class ReportTemplateEngine {
         return embed;
     }
 
-    createUserDetailTemplate(userMetrics, period = 'semanal') {
+    createUserDetailTemplate(metrics, period = 'semanal') {
         const { emojis, colors } = REPORT_CONFIG;
+        const { userMetrics } = metrics;
         
         const embed = new EmbedBuilder()
-            .setTitle(`${emojis.user} Detalhamento por Usuário - ${period}`)
-            .setColor(colors.weekly)
+            .setTitle(`${emojis.user} Produtividade por Usuário - ${period}`)
+            .setColor(colors[period] || colors.weekly)
             .setTimestamp();
 
-        const userDetails = userMetrics
-            .sort((a, b) => b.productivity - a.productivity)
-            .map(user => {
-                const productivityEmoji = user.productivity > 0 ? emojis.trend_up :
-                                        user.productivity < 0 ? emojis.trend_down : '➖';
-                return [
-                    `**${user.name}**`,
-                    `${emojis.issue} Criadas: ${user.created}`,
-                    `${emojis.done} Resolvidas: ${user.resolved}`,
-                    `${productivityEmoji} Saldo: ${user.productivity > 0 ? '+' : ''}${user.productivity}`
-                ].join('\n');
-            })
-            .join('\n\n');
+        if (!userMetrics || userMetrics.length === 0) {
+            embed.setDescription('Nenhum dado de usuário para exibir.');
+            return embed;
+        }
 
-        embed.setDescription(userDetails || 'Nenhum dado disponível');
+        // Ordenar usuários por issues resolvidas (mais relevante para produtividade)
+        const sortedUsers = userMetrics.sort((a, b) => b.resolved - a.resolved).slice(0, 25); // Limite de 25 campos por embed
+
+        // Encontrar o valor máximo para escalar os gráficos de forma consistente
+        const maxValue = Math.max(...sortedUsers.map(u => Math.max(u.created, u.resolved)), 1); // Evita divisão por zero
+
+        const generateBar = (value, char) => {
+            const maxLen = 10; // Comprimento máximo da barra
+            if (value === 0) return '`─`'; // Representação para valor zero
+            // Calcula o comprimento da barra, garantindo que seja pelo menos 1 se o valor for > 0
+            const len = Math.max(1, Math.round((value / maxValue) * maxLen));
+            return `${char.repeat(len)} **${value}**`;
+        };
+
+        for (const user of sortedUsers) {
+            const resolvedBar = generateBar(user.resolved, '🟩');
+            const createdBar = generateBar(user.created, '🟥');
+            
+            embed.addFields({
+                name: `👤 ${user.name}`,
+                value: `Resolvidas: ${resolvedBar}\nCriadas: ${createdBar}`,
+                inline: false
+            });
+        }
+
         return embed;
     }
 
@@ -517,6 +585,8 @@ class YouTrackReportSystem {
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('daily', metrics, projectName);
         
+        const staleIssuesUrl = `${this.engine.youtrackUrl}/issues?q=${encodeURIComponent(metrics.staleIssuesQuery)}`;
+
         // Criar botões de interação
         const buttons = new ActionRowBuilder()
             .addComponents(
@@ -525,9 +595,9 @@ class YouTrackReportSystem {
                     .setLabel('📂 Ver por Usuário')
                     .setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_issues_stale_${projectId || 'all'}`)
-                    .setLabel('⚠️ Issues Antigas')
-                    .setStyle(ButtonStyle.Danger)
+                    .setLabel('⚠️ Ver Issues Antigas')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL(staleIssuesUrl)
                     .setDisabled(metrics.staleIssues === 0)
             );
 
@@ -535,17 +605,26 @@ class YouTrackReportSystem {
     }
 
     async generateWeeklyReport(projectId = null) {
+        console.log(`[DEBUG] generateWeeklyReport: Iniciando para o projeto: ${projectId || 'Todos'}`);
         const cacheKey = this.cache.getCacheKey('weekly', projectId);
         let metrics = this.cache.get(cacheKey);
         
-        if (!metrics) {
+        if (metrics) {
+            console.log(`[DEBUG] generateWeeklyReport: Cache HIT para a chave: ${cacheKey}`);
+        } else {
+            console.log(`[DEBUG] generateWeeklyReport: Cache MISS para a chave: ${cacheKey}. Buscando novas métricas...`);
             metrics = await this.engine.getWeeklyMetrics(projectId);
             this.cache.set(cacheKey, metrics);
+            console.log(`[DEBUG] generateWeeklyReport: Novas métricas armazenadas no cache.`);
         }
         
         const projectName = projectId || 'Todos os Projetos';
+        console.log(`[DEBUG] generateWeeklyReport: Gerando template para o projeto: ${projectName}`);
         const embed = this.templates.generateReport('weekly', metrics, projectName);
         
+        const criticalIssuesUrl = `${this.engine.youtrackUrl}/issues?q=${encodeURIComponent(metrics.criticalIssuesQuery)}`;
+        console.log(`[DEBUG] generateWeeklyReport: URL de issues críticas: ${criticalIssuesUrl}`);
+
         // Criar botões de interação
         const buttons = new ActionRowBuilder()
             .addComponents(
@@ -554,12 +633,13 @@ class YouTrackReportSystem {
                     .setLabel('👥 Detalhamento por Usuário')
                     .setStyle(ButtonStyle.Primary),
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_critical_${projectId || 'all'}`)
-                    .setLabel('🔴 Issues Críticas')
-                    .setStyle(ButtonStyle.Danger)
+                    .setLabel('🔴 Ver Issues Críticas')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL(criticalIssuesUrl)
                     .setDisabled(metrics.criticalOpen === 0)
             );
 
+        console.log('[DEBUG] generateWeeklyReport: Geração do relatório concluída.');
         return { embed, components: [buttons], metrics };
     }
 
@@ -1084,6 +1164,7 @@ async function handleReportCommand(interaction) {
     try {
         const reportType = interaction.options.getString('tipo');
         const projectId = interaction.options.getString('projeto');
+        console.log(`[DEBUG] handleReportCommand: Recebido comando de relatório. Tipo: ${reportType}, Projeto: ${projectId || 'Nenhum'}`);
         
         let result;
         switch (reportType) {
@@ -1121,14 +1202,33 @@ async function handleReportDrillDown(interaction) {
         const period = parts[3];
         const projectId = parts[4] === 'all' ? null : parts[4];
         
+        const getMetricsFromCacheOrFetch = async (reportPeriod, projId) => {
+            const cacheKey = reportSystem.cache.getCacheKey(reportPeriod, projId);
+            let metrics = reportSystem.cache.get(cacheKey);
+
+            if (!metrics) {
+                console.log(`Cache miss para o relatório ${reportPeriod}. Buscando dados atualizados...`);
+                if (reportPeriod === 'daily') {
+                    metrics = await reportSystem.engine.getDailyMetrics(projId);
+                } else if (reportPeriod === 'weekly') {
+                    metrics = await reportSystem.engine.getWeeklyMetrics(projId);
+                }
+
+                if (metrics) {
+                    reportSystem.cache.set(cacheKey, metrics);
+                }
+            }
+            return metrics;
+        };
+
+        let metrics;
         let result;
-        
+
         if (action === 'users') {
-            const cacheKey = reportSystem.cache.getCacheKey(period, projectId);
-            const cachedMetrics = reportSystem.cache.get(cacheKey);
-            
-            if (cachedMetrics && cachedMetrics.userMetrics) {
-                result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
+            metrics = await getMetricsFromCacheOrFetch(period, projectId);
+
+            if (metrics && metrics.userMetrics) {
+                result = await reportSystem.generateUserDetailReport(metrics.userMetrics, period);
                 await interaction.editReply({
                     embeds: [result.embed],
                     components: result.components
@@ -1136,46 +1236,6 @@ async function handleReportDrillDown(interaction) {
             } else {
                 await interaction.editReply('❌ Dados não disponíveis. Execute o relatório principal primeiro.');
             }
-        } else if (action === 'issues' && period === 'stale') {
-            const cacheKey = reportSystem.cache.getCacheKey('daily', projectId);
-            const cachedMetrics = reportSystem.cache.get(cacheKey);
-
-            if (cachedMetrics && cachedMetrics.issues.stale.length > 0) {
-                const issues = cachedMetrics.issues.stale;
-                const description = issues.map(issue => `**[${issue.idReadable}](${YOUTRACK_URL}/issue/${issue.idReadable})** - ${issue.summary}`).join('\n');
-                
-                const embed = new EmbedBuilder()
-                    .setTitle('⚠️ Issues Antigas')
-                    .setDescription(description || 'Nenhuma issue antiga encontrada.')
-                    .setColor(REPORT_CONFIG.colors.danger);
-                
-                await interaction.editReply({
-                    embeds: [embed],
-                    components: []
-                });
-            } else {
-                await interaction.editReply('❌ Nenhuma issue antiga encontrada ou dados não disponíveis.');
-            }
-        } else if (action === 'critical') {
-             const cacheKey = reportSystem.cache.getCacheKey('weekly', projectId);
-             const cachedMetrics = reportSystem.cache.get(cacheKey);
-
-             if (cachedMetrics && cachedMetrics.issues.critical.length > 0) {
-                 const issues = cachedMetrics.issues.critical;
-                 const description = issues.map(issue => `**[${issue.idReadable}](${YOUTRACK_URL}/issue/${issue.idReadable})** - ${issue.summary}`).join('\n');
-                 
-                 const embed = new EmbedBuilder()
-                     .setTitle('🔴 Issues Críticas Abertas')
-                     .setDescription(description || 'Nenhuma issue crítica encontrada.')
-                     .setColor(REPORT_CONFIG.colors.critical);
-                 
-                 await interaction.editReply({
-                     embeds: [embed],
-                     components: []
-                 });
-             } else {
-                 await interaction.editReply('❌ Nenhuma issue crítica encontrada ou dados não disponíveis.');
-             }
         }
         
     } catch (error) {
