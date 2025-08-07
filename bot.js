@@ -116,7 +116,7 @@ class YouTrackDashboardEngine {
         };
     }
 
-    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),state(name),type(name),priority(name)') {
+    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,criada,atualizada,data de resolução,reporter(login,name),assignee(login,name),estado(name),type(name),prioridade(name)') {
         try {
             const response = await axios.get(`${this.youtrackUrl}/api/issues`, {
                 headers: this.headers,
@@ -134,19 +134,20 @@ class YouTrackDashboardEngine {
     }
 
     async getDailyMetrics(projectId = null) {
-        const today = new Date().toISOString().split('T')[0];
-        const baseQuery = projectId ? `project: {${projectId}}` : '';
+        const baseQuery = projectId ? `projeto: {${projectId}}` : '';
         
         const [createdToday, resolvedToday, totalOpen, inProgress] = await Promise.all([
-            this.getIssuesWithFilters(`${baseQuery} created: ${today}`),
-            this.getIssuesWithFilters(`${baseQuery} resolved: ${today}`),
-            this.getIssuesWithFilters(`${baseQuery} state: -{Resolved} -{Done} -{Fixed} -{Closed}`),
-            this.getIssuesWithFilters(`${baseQuery} state: {In Progress} OR state: {In Development}`)
+            this.getIssuesWithFilters(`${baseQuery} criada: Hoje`),
+            // Deixamos a query `data de resolução: Hoje` pois ela parece funcionar para o seu caso.
+            this.getIssuesWithFilters(`${baseQuery} data de resolução: Hoje`),
+            // CORREÇÃO: Usamos a sintaxe padrão `#Unresolved` para encontrar issues não resolvidas.
+            this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
+            // Manter a definição de "Em andamento" que você confirmou
+            this.getIssuesWithFilters(`${baseQuery} estado: {OPEN} OR estado: {IN DEVELOPMENT} OR estado: {CORRECTION} OR estado: {READY TO REVIEW} OR estado: {REVIEWING} OR estado: {APPROVED}`)
         ]);
 
-        // Issues antigas (>7 dias sem update)
-        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const staleIssues = await this.getIssuesWithFilters(`${baseQuery} updated: ..${weekAgo} state: -{Resolved} -{Done}`);
+        // Issues antigas (não atualizadas na semana atual)
+        const staleIssues = await this.getIssuesWithFilters(`${baseQuery} not atualizada: {Esta semana} #Unresolved`);
 
         return {
             createdToday: createdToday.length,
@@ -165,40 +166,24 @@ class YouTrackDashboardEngine {
     }
 
     async getWeeklyMetrics(projectId = null) {
-        const today = new Date();
-        const weekAgo = new Date(today - 7 * 24 * 60 * 60 * 1000);
-        const twoWeeksAgo = new Date(today - 14 * 24 * 60 * 60 * 1000);
-        
-        const formatDate = (date) => date.toISOString().split('T')[0];
-        const baseQuery = projectId ? `project: {${projectId}}` : '';
+        const baseQuery = projectId ? `projeto: {${projectId}}` : '';
 
-        const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, criticalIssues] = await Promise.all([
-            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(weekAgo)}..${formatDate(today)}`),
-            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(weekAgo)}..${formatDate(today)}`),
-            this.getIssuesWithFilters(`${baseQuery} created: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
-            this.getIssuesWithFilters(`${baseQuery} resolved: ${formatDate(twoWeeksAgo)}..${formatDate(weekAgo)}`),
-            this.getIssuesWithFilters(`${baseQuery} priority: {Critical} OR priority: {High} state: -{Resolved} -{Done}`)
+        // Usando a sintaxe de data relativa do YouTrack para a semana atual
+        const [thisWeekCreated, thisWeekResolved, criticalIssues] = await Promise.all([
+            this.getIssuesWithFilters(`${baseQuery} criada: {Esta semana}`),
+            // Deixamos a query `data de resolução: {Esta semana}` pois ela parece funcionar.
+            this.getIssuesWithFilters(`${baseQuery} data de resolução: {Esta semana}`),
+            // CORREÇÃO: Combinamos a prioridade com a sintaxe padrão `#Unresolved`
+            this.getIssuesWithFilters(`${baseQuery} (Prioridade: {Critical} OR Prioridade: {High}) #Unresolved`)
         ]);
 
         // Análise por usuário
         const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
         
-        // Cálculo de tendências
-        const createdTrend = this.calculateTrend(lastWeekCreated.length, thisWeekCreated.length);
-        const resolvedTrend = this.calculateTrend(lastWeekResolved.length, thisWeekResolved.length);
-
         return {
             thisWeek: {
                 created: thisWeekCreated.length,
                 resolved: thisWeekResolved.length
-            },
-            lastWeek: {
-                created: lastWeekCreated.length,
-                resolved: lastWeekResolved.length
-            },
-            trends: {
-                created: createdTrend,
-                resolved: resolvedTrend
             },
             criticalOpen: criticalIssues.length,
             userMetrics,
@@ -290,8 +275,8 @@ class ReportTemplateEngine {
         });
 
         // Saldo líquido
-        const netChangeEmoji = metrics.netChange > 0 ? emojis.warning : 
-                              metrics.netChange < 0 ? emojis.done : '➖';
+        const netChangeEmoji = metrics.netChange > 0 ? emojis.trend_up : 
+                              metrics.netChange < 0 ? emojis.trend_down : '➖';
         const netChangeText = metrics.netChange > 0 ? `+${metrics.netChange} (criou mais que resolveu)` :
                              metrics.netChange < 0 ? `${metrics.netChange} (resolveu mais que criou)` :
                              '0 (equilibrio)';
@@ -316,18 +301,17 @@ class ReportTemplateEngine {
 
     createWeeklyTemplate(metrics, projectName = 'Todos os Projetos') {
         const { emojis, colors } = REPORT_CONFIG;
-        const weekRange = this.getWeekRange();
         
         const embed = new EmbedBuilder()
             .setTitle(`${emojis.sprint} Relatório Semanal - ${projectName}`)
-            .setDescription(`${emojis.calendar} **${weekRange}**`)
+            .setDescription(`${emojis.calendar} **Esta Semana**`)
             .setColor(colors.weekly)
             .setTimestamp();
 
         // Performance da semana
         const performanceValue = [
-            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created} ${this.getTrendEmoji(metrics.trends.created)}`,
-            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved} ${this.getTrendEmoji(metrics.trends.resolved)}`,
+            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created}`,
+            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved}`,
             `${emojis.critical} **Críticas abertas:** ${metrics.criticalOpen}`
         ].join('\n');
 
@@ -335,18 +319,6 @@ class ReportTemplateEngine {
             name: `${emojis.trend_up} Performance da Semana`,
             value: performanceValue,
             inline: false
-        });
-
-        // Comparação com semana anterior
-        const comparisonValue = [
-            `Criadas: **${metrics.lastWeek.created}** → **${metrics.thisWeek.created}**`,
-            `Resolvidas: **${metrics.lastWeek.resolved}** → **${metrics.thisWeek.resolved}**`
-        ].join('\n');
-
-        embed.addFields({
-            name: `${emojis.clock} vs. Semana Anterior`,
-            value: comparisonValue,
-            inline: true
         });
 
         // Top performers
@@ -378,7 +350,8 @@ class ReportTemplateEngine {
             .setColor(colors.weekly)
             .setTimestamp();
 
-        const userDetails = userMetrics
+        // Garantir que userMetrics seja um array antes de ordenar
+        const userDetails = (Array.isArray(userMetrics) ? userMetrics : [])
             .sort((a, b) => b.productivity - a.productivity)
             .map(user => {
                 const productivityEmoji = user.productivity > 0 ? emojis.trend_up :
@@ -519,7 +492,7 @@ class YouTrackReportSystem {
     }
 
     async generateUserDetailReport(userMetrics, period) {
-        const embed = this.templates.generateReport('user_detail', { userMetrics }, period);
+        const embed = this.templates.generateReport('user_detail', userMetrics, period);
         return { embed, components: [] };
     }
 }
@@ -1068,7 +1041,7 @@ async function handleReportDrillDown(interaction) {
                 const result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
                 await interaction.editReply({
                     embeds: [result.embed],
-                    components: result.components
+                    components: [result.components]
                 });
             } else {
                 await interaction.editReply('❌ Dados não disponíveis. Execute o relatório principal primeiro.');
