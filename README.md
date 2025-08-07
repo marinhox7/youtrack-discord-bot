@@ -1,15 +1,15 @@
-YouTrack Discord Bot
+🚀 YouTrack Discord Bot
 Um bot do Discord que se integra com o YouTrack para automatizar a comunicação e o fluxo de trabalho de issues.
 
-Visão Geral
+🌟 Visão Geral
 Este projeto conecta o YouTrack ao Discord, enviando notificações automáticas para um canal específico sempre que uma issue é criada ou atualizada. Além disso, o bot adiciona botões interativos que permitem aos membros do servidor realizar ações diretamente no YouTrack, como atribuir a si mesmos ou mudar o estado de uma issue.
 
 A solução foi desenvolvida para contornar algumas limitações da API do YouTrack, utilizando a Commands API para operações que falhavam com customFields, garantindo assim um sistema mais robusto.
 
-Funcionalidades
-Notificações de Issues: Receba alertas em tempo real no Discord para issues criadas ou finalizadas.
+✨ Funcionalidades
+📢 Notificações de Issues: Receba alertas em tempo real no Discord para issues criadas ou finalizadas.
 
-Interações com Botões: Interaja diretamente com as issues do YouTrack através de botões na mensagem do Discord para:
+🖱️ Interações com Botões: Interaja diretamente com as issues do YouTrack através de botões na mensagem do Discord para:
 
 🔧 Atribuir a mim: Atribui a issue ao usuário que clicou no botão.
 
@@ -17,11 +17,11 @@ Interações com Botões: Interaja diretamente com as issues do YouTrack atravé
 
 🔗 Acessar Issue: Link direto para a issue no YouTrack.
 
-Mapeamento de Usuários: Mapeia usuários do Discord para usuários do YouTrack, permitindo a correta atribuição de issues.
+👤 Mapeamento de Usuários: Mapeia usuários do Discord para usuários do YouTrack, permitindo a correta atribuição de issues.
 
-Validação de Webhook: Garante que apenas webhooks válidos do YouTrack sejam processados, protegendo contra acessos não autorizados.
+🔒 Validação de Webhook: Garante que apenas webhooks válidos do YouTrack sejam processados, protegendo contra acessos não autorizados.
 
-Arquitetura
+🏗️ Arquitetura
 O sistema é composto por três partes principais:
 
 YouTrack: Envia webhooks para um servidor externo em resposta a eventos de issues.
@@ -37,8 +37,8 @@ graph TD
     D -- Clique em Botão --> C;
     C -- API Call --> A;
 
-Configuração do Ambiente
-Pré-requisitos
+⚙️ Configuração do Ambiente
+📋 Pré-requisitos
 Node.js instalado
 
 Uma conta e um bot no Discord Developer Portal
@@ -47,7 +47,7 @@ Uma conta e um projeto no YouTrack
 
 ngrok para expor o servidor local (opcional, mas recomendado para desenvolvimento)
 
-1. Variáveis de Ambiente
+1. 🔑 Variáveis de Ambiente
 Crie um arquivo .env na raiz do projeto com as seguintes variáveis:
 
 DISCORD_BOT_TOKEN="SEU_TOKEN_DO_DISCORD"
@@ -56,12 +56,12 @@ YOUTRACK_URL="https://seu-dominio.youtrack.cloud"
 DISCORD_CHANNEL_ID="ID_DO_CANAL_DO_DISCORD"
 WEBHOOK_PORT=3000
 
-2. Instalação das Dependências
+2. 📦 Instalação das Dependências
 Instale todas as dependências do projeto usando o npm:
 
 npm install
 
-3. Configuração do Mapeamento de Usuários
+3. 👥 Configuração do Mapeamento de Usuários
 O bot utiliza o arquivo userMap.json para mapear IDs de usuários do Discord para logins de usuários do YouTrack. Adicione os usuários relevantes neste arquivo:
 
 {
@@ -69,7 +69,7 @@ O bot utiliza o arquivo userMap.json para mapear IDs de usuários do Discord par
   "ID_DO_USUARIO_DISCORD_2": "login.youtrack.2"
 }
 
-4. Configuração do Webhook no YouTrack
+4. 🔗 Configuração do Webhook no YouTrack
 Exponha seu servidor local à internet usando ngrok: ngrok http 3000. Copie o URL gerado.
 
 No seu projeto do YouTrack, vá em Project Settings > Workflows > Webhooks.
@@ -80,14 +80,14 @@ Certifique-se de que o webhook está configurado para enviar eventos de issue cr
 
 Adicione um cabeçalho de autenticação personalizado x-youtrack-webhook-auth com o valor do YOUTRACK_TOKEN que você definiu no seu .env.
 
-Como Executar
-Modo de Desenvolvimento (com nodemon)
+▶️ Como Executar
+💻 Modo de Desenvolvimento (com nodemon)
 npm run dev
 
-Modo de Produção
+🚀 Modo de Produção
 npm start
 
-Próximos Passos
+📝 Próximos Passos
 [ ] Implementar cache de estados de projeto
 
 [ ] Adicionar mais tipos de campos personalizados
