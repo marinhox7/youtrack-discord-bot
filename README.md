@@ -86,14 +86,3 @@ npm run dev
 
 🚀 Modo de Produção
 npm start
-
-📝 Próximos Passos
-[ ] Implementar cache de estados de projeto
-
-[ ] Adicionar mais tipos de campos personalizados
-
-[ ] Implementar notificações de comentários
-
-[ ] Adicionar comandos slash do Discord
-
-[ ] Melhorar tratamento de permissões
