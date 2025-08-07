@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, InteractionResponseType } from 'discord.js';
 import express from 'express';
 import axios from 'axios';
 import { config } from 'dotenv';
@@ -44,6 +44,34 @@ try {
 
 // Cache para estados de projeto
 const projectStatesCache = new Map();
+
+// Templates de comentários rápidos
+const COMMENT_TEMPLATES = {
+    'needs_info': {
+        text: '❓ **Informações Adicionais Necessárias**\n\nPor favor, forneça mais detalhes sobre:\n- Passos para reproduzir\n- Comportamento esperado vs atual\n- Ambiente (browser, OS, versão)',
+        emoji: '❓'
+    },
+    'duplicate': {
+        text: '🔄 **Issue Duplicada**\n\nEsta issue parece ser duplicada. Por favor, verifique issues existentes antes de criar uma nova.',
+        emoji: '🔄'
+    },
+    'not_bug': {
+        text: '✅ **Não é um Bug**\n\nEste comportamento está funcionando conforme esperado. Para esclarecimentos sobre funcionalidades, consulte a documentação.',
+        emoji: '✅'
+    },
+    'in_progress': {
+        text: '🚧 **Em Desenvolvimento**\n\nEsta issue foi priorizada e está sendo trabalhada. Atualizações serão fornecidas conforme o progresso.',
+        emoji: '🚧'
+    },
+    'testing': {
+        text: '🧪 **Pronto para Testes**\n\nA correção foi implementada e está disponível para testes. Por favor, verifique se resolve o problema reportado.',
+        emoji: '🧪'
+    },
+    'resolved': {
+        text: '✅ **Resolvido**\n\nEsta issue foi corrigida e está disponível na versão mais recente. Obrigado pelo report!',
+        emoji: '✅'
+    }
+};
 
 // Função para obter estados do projeto
 async function getProjectStates(projectId) {
@@ -169,6 +197,58 @@ async function changeIssueState(issueId, stateId) {
     }
 }
 
+// Função para adicionar comentário
+async function addCommentToIssue(issueId, comment, authorName) {
+    try {
+        // Método 1: Tentar criar comentário diretamente
+        const payload = {
+            text: `${comment}\n\n*— ${authorName}*`
+        };
+        
+        const response = await axios.post(
+            `${YOUTRACK_URL}/api/issues/${issueId}/comments`, 
+            payload,
+            {
+                headers: {
+                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        
+        console.log(`Comentário adicionado à issue ${issueId} por ${authorName}`);
+        return { success: true, commentId: response.data.id };
+        
+    } catch (error) {
+        console.error('Erro método 1, tentando Commands API:', error.response?.data || error.message);
+        
+        try {
+            // Método 2: Usar Commands API como fallback
+            const commandPayload = {
+                query: `comment ${comment}\n\n*— ${authorName}*`,
+                issues: [{ idReadable: issueId }]
+            };
+            
+            await axios.post(`${YOUTRACK_URL}/api/commands`, commandPayload, {
+                headers: {
+                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            console.log(`Comentário adicionado via Commands API à issue ${issueId} por ${authorName}`);
+            return { success: true, method: 'commands' };
+            
+        } catch (commandError) {
+            console.error('Erro ao adicionar comentário (ambos métodos):', commandError.response?.data || commandError.message);
+            return { 
+                success: false, 
+                error: commandError.response?.data?.error_description || commandError.message 
+            };
+        }
+    }
+}
+
 // Event listener quando o bot estiver pronto
 client.once('ready', () => {
     console.log(`Bot Discord conectado como: ${client.user.tag}`);
@@ -176,14 +256,41 @@ client.once('ready', () => {
 
 // Event listener para interações
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
+    if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
     const issueId = interaction.customId.split('_')[1];
     
     try {
+        // ==========================================
+        // MODAL PARA COMENTÁRIO CUSTOMIZADO
+        // ==========================================
+        if (interaction.isModalSubmit() && interaction.customId.startsWith('comment_modal_')) {
+            const commentText = interaction.fields.getTextInputValue('comment_input');
+            const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
+            
+            const result = await addCommentToIssue(issueId, commentText, authorName);
+            
+            if (result.success) {
+                await interaction.reply({
+                    content: `✅ Comentário adicionado à issue ${issueId}!`,
+                    flags: 64 // EPHEMERAL flag
+                });
+            } else {
+                await interaction.reply({
+                    content: `❌ Erro ao adicionar comentário: ${result.error}`,
+                    flags: 64 // EPHEMERAL flag
+                });
+            }
+            return;
+        }
+        
+        // ==========================================
+        // BOTÕES
+        // ==========================================
         if (interaction.isButton()) {
             const action = interaction.customId.split('_')[0];
             
+            // BOTÃO DE ATRIBUIÇÃO
             if (action === 'assign') {
                 const discordUserId = interaction.user.id;
                 const youtrackLogin = userMap[discordUserId];
@@ -210,6 +317,7 @@ client.on('interactionCreate', async interaction => {
                     });
                 }
                 
+            // BOTÃO DE ESTADOS
             } else if (action === 'states') {
                 try {
                     // Obter projectId da issue
@@ -260,9 +368,81 @@ client.on('interactionCreate', async interaction => {
                         ephemeral: true
                     });
                 }
+                
+            // BOTÃO DE COMENTÁRIO CUSTOMIZADO
+            } else if (action === 'comment') {
+                const modal = new ModalBuilder()
+                    .setCustomId(`comment_modal_${issueId}`)
+                    .setTitle(`Comentar na Issue ${issueId}`);
+
+                const commentInput = new TextInputBuilder()
+                    .setCustomId('comment_input')
+                    .setLabel('Seu comentário')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Digite seu comentário aqui...')
+                    .setRequired(true)
+                    .setMaxLength(4000);
+
+                const actionRow = new ActionRowBuilder().addComponents(commentInput);
+                modal.addComponents(actionRow);
+
+                await interaction.showModal(modal);
+                
+            // BOTÕES DE COMENTÁRIOS RÁPIDOS
+            } else if (action === 'quick') {
+                const templateKey = interaction.customId.split('_')[2]; // quick_issueId_templateKey
+                const template = COMMENT_TEMPLATES[templateKey];
+                
+                if (!template) {
+                    await interaction.reply({
+                        content: '❌ Template de comentário não encontrado',
+                        ephemeral: true
+                    });
+                    return;
+                }
+                
+                const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
+                const result = await addCommentToIssue(issueId, template.text, authorName);
+                
+                if (result.success) {
+                    await interaction.reply({
+                        content: `${template.emoji} Comentário "${templateKey}" adicionado à issue ${issueId}!`,
+                        ephemeral: true
+                    });
+                } else {
+                    await interaction.reply({
+                        content: `❌ Erro ao adicionar comentário: ${result.error}`,
+                        ephemeral: true
+                    });
+                }
+                
+            // BOTÃO PARA MOSTRAR TEMPLATES
+            } else if (action === 'templates') {
+                const templateButtons = Object.keys(COMMENT_TEMPLATES).slice(0, 5).map(key => {
+                    const template = COMMENT_TEMPLATES[key];
+                    return new ButtonBuilder()
+                        .setCustomId(`quick_${issueId}_${key}`)
+                        .setLabel(key.replace('_', ' ').toUpperCase())
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji(template.emoji);
+                });
+                
+                const rows = [];
+                for (let i = 0; i < templateButtons.length; i += 5) {
+                    rows.push(new ActionRowBuilder().addComponents(templateButtons.slice(i, i + 5)));
+                }
+                
+                await interaction.reply({
+                    content: `Escolha um comentário rápido para ${issueId}:`,
+                    components: rows,
+                    ephemeral: true
+                });
             }
         }
         
+        // ==========================================
+        // SELECT MENU PARA ESTADOS
+        // ==========================================
         if (interaction.isStringSelectMenu()) {
             const action = interaction.customId.split('_')[0];
             
@@ -321,7 +501,11 @@ app.post('/webhook', async (req, res) => {
             });
         }
         
-        // Criar botões
+        // ==========================================
+        // BOTÕES COM SISTEMA DE COMENTÁRIOS
+        // ==========================================
+        
+        // Primeira linha: Ações principais
         const assignButton = new ButtonBuilder()
             .setCustomId(`assign_${data.issueId}`)
             .setLabel('Atribuir para mim')
@@ -334,12 +518,24 @@ app.post('/webhook', async (req, res) => {
             .setStyle(ButtonStyle.Secondary)
             .setEmoji('🔄');
         
-        const row = new ActionRowBuilder()
-            .addComponents(assignButton, stateButton);
+        const commentButton = new ButtonBuilder()
+            .setCustomId(`comment_${data.issueId}`)
+            .setLabel('Comentar')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('💬');
+        
+        const templatesButton = new ButtonBuilder()
+            .setCustomId(`templates_${data.issueId}`)
+            .setLabel('Comentários Rápidos')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('⚡');
+        
+        const row1 = new ActionRowBuilder()
+            .addComponents(assignButton, stateButton, commentButton, templatesButton);
         
         await channel.send({
             embeds: [embed],
-            components: [row]
+            components: [row1]
         });
         
         res.status(200).json({ success: true });
