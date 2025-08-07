@@ -15,8 +15,9 @@ const YOUTRACK_TOKEN = process.env.YOUTRACK_TOKEN;
 const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
 const YOUTRACK_URL = process.env.YOUTRACK_URL;
 
-// Este é o URL que você deve atualizar sempre que o ngrok mudar
-const WEBHOOK_URL = 'https://db852ce46491.ngrok-free.app';
+// A URL do ngrok é variável e deve ser configurada no YouTrack
+// a cada vez que o ngrok for reiniciado. Pegue a URL gerada
+// e a insira no seu arquivo .env, na variável NGROK_WEBHOOK_URL.
 
 // Validação simples para o token do YouTrack
 const validateYouTrackToken = (req, res, next) => {
@@ -53,10 +54,5 @@ app.post('/webhook', validateYouTrackToken, async (req, res) => {
 });
 
 app.listen(WEBHOOK_PORT, () => {
-    console.log(`🚀 Servidor do webhook rodando em http://localhost:${WEBHOOK_PORT}`);
-    console.log(`🔗 Webhook URL público: ${WEBHOOK_URL}/webhook`);
-    console.log('🔔 Lembre-se de configurar este URL no YouTrack.');
+    console.log(`🚀 Servidor Express rodando na porta ${WEBHOOK_PORT}`);
 });
-
-// Inicializa o bot
-client.login(process.env.DISCORD_BOT_TOKEN);
