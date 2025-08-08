@@ -32,6 +32,7 @@ const commands = [
                         .setRequired(false)
                 )
         )
+        // COMANDO ORIGINAL: solicitar_ajuste agora é o primeiro passo
         .addSubcommand(subcommand =>
             subcommand
                 .setName('adicionar_tempo')
@@ -57,6 +58,7 @@ const commands = [
                         )
                 )
         )
+        // NOVO SUBCOMANDO: Subtrair tempo
         .addSubcommand(subcommand =>
             subcommand
                 .setName('subtrair_tempo')

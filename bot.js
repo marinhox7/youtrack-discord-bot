@@ -834,33 +834,71 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             if (interaction.options.getSubcommand() === 'adicionar_tempo') {
-                const selectMenu = new StringSelectMenuBuilder()
-                    .setCustomId(`work_type_select_adicionar_${interaction.user.id}`)
-                    .setPlaceholder('Selecione o tipo de trabalho')
-                    .addOptions(WORK_TYPES);
+                const workType = interaction.options.getString('tipo_trabalho');
+                const modal = new ModalBuilder()
+                    .setCustomId(`ajuste_modal_adicionar_${interaction.user.id}_${workType.replace(/\s/g, '_')}`)
+                    .setTitle(`Adicionar Tempo: ${workType}`);
 
-                const row = new ActionRowBuilder().addComponents(selectMenu);
-                
-                await interaction.reply({
-                    content: 'Por favor, selecione o tipo de trabalho para a sua solicitação:',
-                    components: [row],
-                    ephemeral: true
-                });
+                const issueIdInput = new TextInputBuilder()
+                    .setCustomId('issueIdInput')
+                    .setLabel('ID da Issue (Ex: PROJ-123)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const timeInput = new TextInputBuilder()
+                    .setCustomId('timeInput')
+                    .setLabel('Tempo a ser ajustado (Ex: 3h, 1h30m, 30m)')
+                    .setPlaceholder('Ex: 3h, 1h30m')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const reasonInput = new TextInputBuilder()
+                    .setCustomId('reasonInput')
+                    .setLabel('Motivo da solicitação')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
+
+                const firstActionRow = new ActionRowBuilder().addComponents(issueIdInput);
+                const secondActionRow = new ActionRowBuilder().addComponents(timeInput);
+                const thirdActionRow = new ActionRowBuilder().addComponents(reasonInput);
+
+                modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
+
+                await interaction.showModal(modal);
                 return;
             }
              if (interaction.options.getSubcommand() === 'subtrair_tempo') {
-                const selectMenu = new StringSelectMenuBuilder()
-                    .setCustomId(`work_type_select_subtrair_${interaction.user.id}`)
-                    .setPlaceholder('Selecione o tipo de trabalho')
-                    .addOptions(WORK_TYPES);
+                const workType = interaction.options.getString('tipo_trabalho');
+                const modal = new ModalBuilder()
+                    .setCustomId(`ajuste_modal_subtrair_${interaction.user.id}_${workType.replace(/\s/g, '_')}`)
+                    .setTitle(`Corrigir Tempo: ${workType}`);
 
-                const row = new ActionRowBuilder().addComponents(selectMenu);
-                
-                await interaction.reply({
-                    content: 'Por favor, selecione o tipo de trabalho para a sua solicitação de correção:',
-                    components: [row],
-                    ephemeral: true
-                });
+                const issueIdInput = new TextInputBuilder()
+                    .setCustomId('issueIdInput')
+                    .setLabel('ID da Issue (Ex: PROJ-123)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const timeInput = new TextInputBuilder()
+                    .setCustomId('timeInput')
+                    .setLabel('Tempo a ser ajustado (Ex: 3h, 1h30m, 30m)')
+                    .setPlaceholder('Ex: 1h30m (sem o sinal de -)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const reasonInput = new TextInputBuilder()
+                    .setCustomId('reasonInput')
+                    .setLabel('Motivo da solicitação')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
+
+                const firstActionRow = new ActionRowBuilder().addComponents(issueIdInput);
+                const secondActionRow = new ActionRowBuilder().addComponents(timeInput);
+                const thirdActionRow = new ActionRowBuilder().addComponents(reasonInput);
+
+                modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
+
+                await interaction.showModal(modal);
                 return;
             }
         }
@@ -878,166 +916,118 @@ client.on('interactionCreate', async interaction => {
         }
     }
     
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('work_type_select_')) {
-        const selectedWorkType = interaction.values[0];
-        const parts = interaction.customId.split('_');
-        const action = parts[2];
-        const userId = parts[3];
-
-        const modal = new ModalBuilder()
-            .setCustomId(`ajuste_modal_${action}_${userId}_${selectedWorkType.replace(/\s/g, '_')}`)
-            .setTitle(`${action === 'adicionar' ? 'Adicionar' : 'Corrigir'} Tempo: ${selectedWorkType}`);
-
-        const issueIdInput = new TextInputBuilder()
-            .setCustomId('issueIdInput')
-            .setLabel('ID da Issue (Ex: PROJ-123)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-        const timeInput = new TextInputBuilder()
-            .setCustomId('timeInput')
-            .setLabel('Tempo a ser ajustado (Ex: 3h, 1h30m, 30m)')
-            .setPlaceholder(action === 'subtrair' ? 'Ex: 1h30m (sem o sinal de -)' : 'Ex: 3h, 1h30m')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-        const reasonInput = new TextInputBuilder()
-            .setCustomId('reasonInput')
-            .setLabel('Motivo da solicitação')
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true);
-
-        const firstActionRow = new ActionRowBuilder().addComponents(issueIdInput);
-        const secondActionRow = new ActionRowBuilder().addComponents(timeInput);
-        const thirdActionRow = new ActionRowBuilder().addComponents(reasonInput);
-
-        modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
-
-        await interaction.showModal(modal);
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('ajuste_modal_')) {
+        await handleTimeRequestModal(interaction);
         return;
     }
-
-    if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
-
-    try {
-        if (interaction.isModalSubmit()) {
-            if (interaction.customId.startsWith('ajuste_modal_')) {
-                await handleTimeRequestModal(interaction);
-                return;
-            }
+    
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId.startsWith('comment_modal_')) {
+            const issueId = interaction.customId.replace('comment_modal_', '');
+            const commentText = interaction.fields.getTextInputValue('comment_input');
+            const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
             
-            if (interaction.customId.startsWith('comment_modal_')) {
-                const issueId = interaction.customId.replace('comment_modal_', '');
-                const commentText = interaction.fields.getTextInputValue('comment_input');
-                const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
-                
-                const result = await addCommentToIssue(issueId, commentText, authorName);
-                
-                if (result.success) {
-                    await interaction.reply({ content: `✅ Comentário adicionado à issue ${issueId}!`, flags: 64 });
-                } else {
-                    await interaction.reply({ content: `❌ Erro ao adicionar comentário: ${result.error}`, flags: 64 });
-                }
-                return;
-            }
-        }
-        
-        let issueId;
-        if (interaction.isButton() || interaction.isStringSelectMenu()) {
-            const parts = interaction.customId.split('_');
-            if (parts.length >= 2) {
-                issueId = parts[1];
+            const result = await addCommentToIssue(issueId, commentText, authorName);
+            
+            if (result.success) {
+                await interaction.reply({ content: `✅ Comentário adicionado à issue ${issueId}!`, flags: 64 });
             } else {
+                await interaction.reply({ content: `❌ Erro ao adicionar comentário: ${result.error}`, flags: 64 });
+            }
+            return;
+        }
+    }
+    
+    let issueId;
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        const parts = interaction.customId.split('_');
+        if (parts.length >= 2) {
+            issueId = parts[1];
+        } else {
+            return;
+        }
+    }
+    
+    if (interaction.isButton()) {
+        const action = interaction.customId.split('_')[0];
+        
+        if (action === 'assign') {
+            const discordUserId = interaction.user.id;
+            const youtrackLogin = userMap[discordUserId];
+            if (!youtrackLogin) {
+                await interaction.reply({ content: '❌ Usuário não mapeado. Configure o userMap.json', flags: 64 });
                 return;
             }
-        }
-        
-        if (interaction.isButton()) {
-            const action = interaction.customId.split('_')[0];
-            
-            if (action === 'assign') {
-                const discordUserId = interaction.user.id;
-                const youtrackLogin = userMap[discordUserId];
-                if (!youtrackLogin) {
-                    await interaction.reply({ content: '❌ Usuário não mapeado. Configure o userMap.json', flags: 64 });
-                    return;
-                }
-                const success = await assignIssue(issueId, youtrackLogin);
-                if (success) {
-                    await interaction.reply({ content: `✅ Issue ${issueId} atribuída para você!`, flags: 64 });
-                } else {
-                    await interaction.reply({ content: `❌ Erro ao atribuir issue ${issueId}`, flags: 64 });
-                }
-            } else if (action === 'states') {
-                try {
-                    const issueResponse = await axios.get(`${YOUTRACK_URL}/api/issues/${issueId}?fields=project(id)`, {
-                        headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
-                    });
-                    const projectId = issueResponse.data.project.id;
-                    const states = await getProjectStates(projectId);
-                    if (states.length === 0) {
-                        await interaction.reply({ content: '❌ Não foi possível obter os estados disponíveis', flags: 64 });
-                        return;
-                    }
-                    const limitedStates = states.slice(0, 25);
-                    const selectMenu = new StringSelectMenuBuilder()
-                        .setCustomId(`state_${issueId}`)
-                        .setPlaceholder('Selecione o novo estado')
-                        .addOptions(limitedStates.map(state => ({ label: state.name, value: state.id, description: state.isResolved ? 'Estado resolvido' : 'Estado ativo' })));
-                    const row = new ActionRowBuilder().addComponents(selectMenu);
-                    await interaction.reply({ content: `Escolha o novo estado para ${issueId}:`, components: [row], flags: 64 });
-                } catch (error) {
-                    await interaction.reply({ content: '❌ Erro ao buscar estados disponíveis', flags: 64 });
-                }
-            } else if (action === 'comment') {
-                const modal = new ModalBuilder().setCustomId(`comment_modal_${issueId}`).setTitle(`Comentar na Issue ${issueId}`);
-                const commentInput = new TextInputBuilder().setCustomId('comment_input').setLabel('Seu comentário').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
-                const actionRow = new ActionRowBuilder().addComponents(commentInput);
-                modal.addComponents(actionRow);
-                await interaction.showModal(modal);
-            } else if (action === 'quick') {
-                const templateKey = interaction.customId.split('_')[2];
-                const template = COMMENT_TEMPLATES[templateKey];
-                if (!template) {
-                    await interaction.reply({ content: '❌ Template de comentário não encontrado', flags: 64 });
-                    return;
-                }
-                const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
-                const result = await addCommentToIssue(issueId, template.text, authorName);
-                if (result.success) {
-                    await interaction.reply({ content: `${template.emoji} Comentário "${templateKey}" adicionado à issue ${issueId}!`, flags: 64 });
-                } else {
-                    await interaction.reply({ content: `❌ Erro ao adicionar comentário: ${result.error}`, flags: 64 });
-                }
-            } else if (action === 'templates') {
-                const templateButtons = Object.keys(COMMENT_TEMPLATES).slice(0, 5).map(key => {
-                    const template = COMMENT_TEMPLATES[key];
-                    return new ButtonBuilder().setCustomId(`quick_${issueId}_${key}`).setLabel(key.replace('_', ' ').toUpperCase()).setStyle(ButtonStyle.Secondary).setEmoji(template.emoji);
+            const success = await assignIssue(issueId, youtrackLogin);
+            if (success) {
+                await interaction.reply({ content: `✅ Issue ${issueId} atribuída para você!`, flags: 64 });
+            } else {
+                await interaction.reply({ content: `❌ Erro ao atribuir issue ${issueId}`, flags: 64 });
+            }
+        } else if (action === 'states') {
+            try {
+                const issueResponse = await axios.get(`${YOUTRACK_URL}/api/issues/${issueId}?fields=project(id)`, {
+                    headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
                 });
-                const rows = [];
-                for (let i = 0; i < templateButtons.length; i += 5) {
-                    rows.push(new ActionRowBuilder().addComponents(templateButtons.slice(i, i + 5)));
+                const projectId = issueResponse.data.project.id;
+                const states = await getProjectStates(projectId);
+                if (states.length === 0) {
+                    await interaction.reply({ content: '❌ Não foi possível obter os estados disponíveis', flags: 64 });
+                    return;
                 }
-                await interaction.reply({ content: `Escolha um comentário rápido para ${issueId}:`, components: rows, flags: 64 });
+                const limitedStates = states.slice(0, 25);
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId(`state_${issueId}`)
+                    .setPlaceholder('Selecione o novo estado')
+                    .addOptions(limitedStates.map(state => ({ label: state.name, value: state.id, description: state.isResolved ? 'Estado resolvido' : 'Estado ativo' })));
+                const row = new ActionRowBuilder().addComponents(selectMenu);
+                await interaction.reply({ content: `Escolha o novo estado para ${issueId}:`, components: [row], flags: 64 });
+            } catch (error) {
+                await interaction.reply({ content: '❌ Erro ao buscar estados disponíveis', flags: 64 });
             }
-        }
-        
-        if (interaction.isStringSelectMenu()) {
-            const action = interaction.customId.split('_')[0];
-            if (action === 'state') {
-                const selectedStateId = interaction.values[0];
-                const success = await changeIssueState(issueId, selectedStateId);
-                if (success) {
-                    await interaction.reply({ content: `✅ Estado da issue ${issueId} alterado com sucesso!`, flags: 64 });
-                } else {
-                    await interaction.reply({ content: `❌ Erro ao alterar estado da issue ${issueId}`, flags: 64 });
-                }
+        } else if (action === 'comment') {
+            const modal = new ModalBuilder().setCustomId(`comment_modal_${issueId}`).setTitle(`Comentar na Issue ${issueId}`);
+            const commentInput = new TextInputBuilder().setCustomId('comment_input').setLabel('Seu comentário').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
+            const actionRow = new ActionRowBuilder().addComponents(commentInput);
+            modal.addComponents(actionRow);
+            await interaction.showModal(modal);
+        } else if (action === 'quick') {
+            const templateKey = interaction.customId.split('_')[2];
+            const template = COMMENT_TEMPLATES[templateKey];
+            if (!template) {
+                await interaction.reply({ content: '❌ Template de comentário não encontrado', flags: 64 });
+                return;
             }
+            const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
+            const result = await addCommentToIssue(issueId, template.text, authorName);
+            if (result.success) {
+                await interaction.reply({ content: `${template.emoji} Comentário "${templateKey}" adicionado à issue ${issueId}!`, flags: 64 });
+            } else {
+                await interaction.reply({ content: `❌ Erro ao adicionar comentário: ${result.error}`, flags: 64 });
+            }
+        } else if (action === 'templates') {
+            const templateButtons = Object.keys(COMMENT_TEMPLATES).slice(0, 5).map(key => {
+                const template = COMMENT_TEMPLATES[key];
+                return new ButtonBuilder().setCustomId(`quick_${issueId}_${key}`).setLabel(key.replace('_', ' ').toUpperCase()).setStyle(ButtonStyle.Secondary).setEmoji(template.emoji);
+            });
+            const rows = [];
+            for (let i = 0; i < templateButtons.length; i += 5) {
+                rows.push(new ActionRowBuilder().addComponents(templateButtons.slice(i, i + 5)));
+            }
+            await interaction.reply({ content: `Escolha um comentário rápido para ${issueId}:`, components: rows, flags: 64 });
         }
-    } catch (error) {
-        console.error('Erro ao processar interação:', error);
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: '❌ Erro interno do bot', flags: 64 });
+    }
+    
+    if (interaction.isStringSelectMenu()) {
+        const action = interaction.customId.split('_')[0];
+        if (action === 'state') {
+            const selectedStateId = interaction.values[0];
+            const success = await changeIssueState(issueId, selectedStateId);
+            if (success) {
+                await interaction.reply({ content: `✅ Estado da issue ${issueId} alterado com sucesso!`, flags: 64 });
+            } else {
+                await interaction.reply({ content: `❌ Erro ao alterar estado da issue ${issueId}`, flags: 64 });
+            }
         }
     }
 });
@@ -1101,7 +1091,7 @@ async function handleTimeRequestModal(interaction) {
     const issueId = interaction.fields.getTextInputValue('issueIdInput');
     const time = interaction.fields.getTextInputValue('timeInput');
     const reason = interaction.fields.getTextInputValue('reasonInput');
-    const action = parts[2]; // 'adicionar' ou 'subtrair'
+    const action = parts[2];
     const requesterId = parts[3];
     const workType = parts.length > 4 ? parts.slice(4).join(' ') : null;
 
