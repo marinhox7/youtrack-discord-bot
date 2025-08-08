@@ -160,8 +160,8 @@ class YouTrackDashboardEngine {
         
         const [createdToday, resolvedToday, totalOpen, inProgress] = await Promise.all([
             this.getIssuesWithFilters(`${baseQuery} created: Today`),
-            // CORREÇÃO: usar "resolved date:" em vez de "resolved:"
-            this.getIssuesWithFilters(`${baseQuery} resolved date: Today`),
+            // CORREÇÃO: usar método robusto para issues resolvidas
+            this.getResolvedIssuesToday(baseQuery),
             // CORREÇÃO: usar #Unresolved em vez de sintaxe complexa de State
             this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
             // CORREÇÃO: simplificar para usar #Unresolved sem estados específicos
@@ -187,37 +187,156 @@ class YouTrackDashboardEngine {
         };
     }
 
+    async getResolvedIssuesToday(baseQuery) {
+        // Tentar múltiplas abordagens para issues resolvidas hoje
+        const approaches = [
+            `${baseQuery} resolved date: Today`,
+            `${baseQuery} #Resolved updated: Today`,
+            `${baseQuery} State: DONE updated: Today`,
+            `${baseQuery} State: CLOSED updated: Today`,
+            `${baseQuery} State: RESOLVIDA updated: Today`,
+            `${baseQuery} State: PRODUCTION updated: Today`
+        ];
+
+        for (const query of approaches) {
+            try {
+                const result = await this.getIssuesWithFilters(query);
+                if (result.length > 0) {
+                    console.log(`✅ Query de issues resolvidas hoje funcionou: ${query} (${result.length} issues)`);
+                    return result;
+                }
+            } catch (error) {
+                console.log(`❌ Query falhou: ${query}`);
+                continue;
+            }
+        }
+
+        console.log('⚠️ Nenhuma query de issues resolvidas hoje funcionou, retornando array vazio');
+        return [];
+    }
+
     async getWeeklyMetrics(projectId = null) {
         const baseQuery = projectId ? `project: {${projectId}}` : '';
 
-        // CORREÇÃO: usar sintaxe correta para datas e prioridades
-        const [thisWeekCreated, thisWeekResolved, criticalIssues] = await Promise.all([
+        // CORREÇÃO: Testar múltiplas abordagens para issues resolvidas
+        const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, staleIssues] = await Promise.all([
             this.getIssuesWithFilters(`${baseQuery} created: {This week}`),
-            // CORREÇÃO: usar "resolved date:" em vez de "resolved:"
-            this.getIssuesWithFilters(`${baseQuery} resolved date: {This week}`),
-            // CORREÇÃO: usar #Unresolved e valores simples de prioridade
-            this.getIssuesWithFilters(`${baseQuery} #Unresolved`)
+            // MÉTODO 1: Tentar com "resolved date"
+            this.getResolvedIssuesThisWeek(baseQuery),
+            this.getIssuesWithFilters(`${baseQuery} created: {Last week}`),
+            // MÉTODO 1: Tentar com "resolved date" semana passada
+            this.getResolvedIssuesLastWeek(baseQuery),
+            // Issues antigas não atualizadas há mais de 1 semana
+            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 1w} #Unresolved`)
         ]);
 
-        // Análise por usuário
-        const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
+        // Análise por usuário com dados da semana
+        const userMetrics = await this.analyzeByUser(thisWeekCreated, thisWeekResolved);
         
         return {
             thisWeek: {
                 created: thisWeekCreated.length,
                 resolved: thisWeekResolved.length
             },
-            criticalOpen: criticalIssues.length,
+            lastWeek: {
+                created: lastWeekCreated.length,
+                resolved: lastWeekResolved.length
+            },
+            staleIssues: staleIssues.length,
             userMetrics,
+            trends: {
+                createdTrend: this.calculateTrend(lastWeekCreated.length, thisWeekCreated.length),
+                resolvedTrend: this.calculateTrend(lastWeekResolved.length, thisWeekResolved.length)
+            },
             issues: {
                 created: thisWeekCreated,
                 resolved: thisWeekResolved,
-                critical: criticalIssues
+                stale: staleIssues
             }
         };
     }
 
-    analyzeByUser(createdIssues, resolvedIssues) {
+    async getResolvedIssuesThisWeek(baseQuery) {
+        // Tentar múltiplas abordagens para issues resolvidas
+        const approaches = [
+            `${baseQuery} resolved date: {This week}`,
+            `${baseQuery} #Resolved updated: {This week}`,
+            `${baseQuery} State: DONE updated: {This week}`,
+            `${baseQuery} State: CLOSED updated: {This week}`,
+            `${baseQuery} State: RESOLVIDA updated: {This week}`,
+            `${baseQuery} State: PRODUCTION updated: {This week}`
+        ];
+
+        for (const query of approaches) {
+            try {
+                const result = await this.getIssuesWithFilters(query);
+                if (result.length > 0) {
+                    console.log(`✅ Query de issues resolvidas funcionou: ${query} (${result.length} issues)`);
+                    return result;
+                }
+            } catch (error) {
+                console.log(`❌ Query falhou: ${query}`);
+                continue;
+            }
+        }
+
+        console.log('⚠️ Nenhuma query de issues resolvidas funcionou, retornando array vazio');
+        return [];
+    }
+
+    async getResolvedIssuesLastWeek(baseQuery) {
+        // Tentar múltiplas abordagens para issues resolvidas semana passada
+        const approaches = [
+            `${baseQuery} resolved date: {Last week}`,
+            `${baseQuery} #Resolved updated: {Last week}`,
+            `${baseQuery} State: DONE updated: {Last week}`,
+            `${baseQuery} State: CLOSED updated: {Last week}`,
+            `${baseQuery} State: RESOLVIDA updated: {Last week}`,
+            `${baseQuery} State: PRODUCTION updated: {Last week}`
+        ];
+
+        for (const query of approaches) {
+            try {
+                const result = await this.getIssuesWithFilters(query);
+                if (result.length > 0) {
+                    console.log(`✅ Query de issues resolvidas semana passada funcionou: ${query} (${result.length} issues)`);
+                    return result;
+                }
+            } catch (error) {
+                console.log(`❌ Query falhou: ${query}`);
+                continue;
+            }
+        }
+
+        console.log('⚠️ Nenhuma query de issues resolvidas semana passada funcionou, retornando array vazio');
+        return [];
+    }
+
+    // NOVA FUNÇÃO: Obtém o resolvedor real de uma issue usando a API de histórico de atividades
+    async getIssueResolver(issueId) {
+        try {
+            const response = await axios.get(
+                `${this.youtrackUrl}/api/issues/${issueId}/activities?categories=CustomFieldCategory&fields=author(login,name),timestamp,field(name),added(name,isResolved),removed(name)`,
+                { headers: this.headers }
+            );
+
+            const activities = response.data;
+
+            // Encontrar o usuário que mudou o estado para um valor resolvido
+            for (const activity of activities) {
+                if (activity.field?.name === 'State' &&
+                    activity.added?.some(state => state.isResolved)) {
+                    return activity.author;
+                }
+            }
+        } catch (error) {
+            console.error(`Erro ao buscar resolvedor para issue ${issueId}:`, error.response?.data || error.message);
+        }
+        return null; // Nenhum resolvedor encontrado
+    }
+
+    // FUNÇÃO ANTIGA MODIFICADA PARA USAR getIssueResolver()
+    async analyzeByUser(createdIssues, resolvedIssues) {
         const users = new Map();
         
         // Contar issues criadas por usuário
@@ -232,16 +351,17 @@ class YouTrackDashboardEngine {
         });
         
         // Contar issues resolvidas por assignee
-        resolvedIssues.forEach(issue => {
-            if (issue.assignee) {
-                const login = issue.assignee.login;
+        for (const issue of resolvedIssues) {
+            const resolver = await this.getIssueResolver(issue.id);
+            if (resolver) {
+                const login = resolver.login;
                 if (!users.has(login)) {
-                    users.set(login, { name: issue.assignee.name, created: 0, resolved: 0 });
+                    users.set(login, { name: resolver.name, created: 0, resolved: 0 });
                 }
                 users.get(login).resolved++;
             }
-        });
-        
+        }
+
         return Array.from(users.entries()).map(([login, data]) => ({
             login,
             name: data.name,
@@ -330,11 +450,14 @@ class ReportTemplateEngine {
             .setColor(colors.weekly)
             .setTimestamp();
 
-        // Performance da semana
+        // Performance da semana com tendências
+        const createdTrendEmoji = this.getTrendEmoji(metrics.trends.createdTrend);
+        const resolvedTrendEmoji = this.getTrendEmoji(metrics.trends.resolvedTrend);
+        
         const performanceValue = [
-            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created}`,
-            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved}`,
-            `${emojis.critical} **Issues abertas:** ${metrics.criticalOpen}`
+            `${emojis.issue} **Criadas:** ${metrics.thisWeek.created} ${createdTrendEmoji}`,
+            `${emojis.done} **Resolvidas:** ${metrics.thisWeek.resolved} ${resolvedTrendEmoji}`,
+            `${emojis.warning} **Issues antigas:** ${metrics.staleIssues} (+1 semana sem atualização)`
         ].join('\n');
 
         embed.addFields({
@@ -343,21 +466,36 @@ class ReportTemplateEngine {
             inline: false
         });
 
-        // Top performers
-        const topUsers = metrics.userMetrics
-            .sort((a, b) => b.resolved - a.resolved)
-            .slice(0, 3)
-            .map((user, index) => {
-                const medal = ['🥇', '🥈', '🥉'][index];
-                return `${medal} **${user.name}**: ${user.resolved} resolvidas`;
-            })
-            .join('\n');
+        // Comparação com semana passada
+        const comparisonValue = [
+            `${emojis.issue} **Semana passada - Criadas:** ${metrics.lastWeek.created}`,
+            `${emojis.done} **Semana passada - Resolvidas:** ${metrics.lastWeek.resolved}`
+        ].join('\n');
 
-        if (topUsers) {
+        embed.addFields({
+            name: `${emojis.calendar} Comparação`,
+            value: comparisonValue,
+            inline: true
+        });
+
+        // Top 5 performers com ranking
+        if (metrics.userMetrics && metrics.userMetrics.length > 0) {
+            const topUsers = metrics.userMetrics
+                .sort((a, b) => b.resolved - a.resolved)
+                .slice(0, 5)
+                .map((user, index) => {
+                    const medals = ['🥇', '🥈', '🥉', '🏅', '⭐'];
+                    const medal = medals[index] || '👤';
+                    const productivity = user.productivity > 0 ? `(+${user.productivity})` : 
+                                       user.productivity < 0 ? `(${user.productivity})` : '(0)';
+                    return `${medal} **${user.name}**: ${user.resolved} resolvidas ${productivity}`;
+                })
+                .join('\n');
+
             embed.addFields({
-                name: `${emojis.team} Top Performers`,
+                name: `${emojis.team} Top 5 Performers`,
                 value: topUsers,
-                inline: true
+                inline: false
             });
         }
 
@@ -501,13 +639,13 @@ class YouTrackReportSystem {
             .addComponents(
                 new ButtonBuilder()
                     .setCustomId(`report_drill_users_weekly`)
-                    .setLabel('👥 Detalhamento por Usuário')
+                    .setLabel('👥 Ver por Usuário')
                     .setStyle(ButtonStyle.Primary),
                 new ButtonBuilder()
-                    .setCustomId(`report_drill_critical`)
-                    .setLabel('🔴 Issues Críticas')
+                    .setCustomId(`report_drill_stale_weekly`)
+                    .setLabel('⚠️ Issues Antigas')
                     .setStyle(ButtonStyle.Danger)
-                    .setDisabled(metrics.criticalOpen === 0)
+                    .setDisabled(metrics.staleIssues === 0)
             );
 
         return { embed, components: [buttons], metrics };
@@ -1063,10 +1201,47 @@ async function handleReportDrillDown(interaction) {
                 const result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
                 await interaction.editReply({
                     embeds: [result.embed],
-                    components: [result.components]
+                    components: result.components
                 });
             } else {
                 await interaction.editReply('❌ Dados não disponíveis. Execute o relatório principal primeiro.');
+            }
+        } else if (action === 'stale') {
+            const cacheKey = reportSystem.cache.getCacheKey(period, null);
+            const cachedMetrics = reportSystem.cache.get(cacheKey);
+            
+            if (cachedMetrics && cachedMetrics.issues && cachedMetrics.issues.stale) {
+                const staleIssues = cachedMetrics.issues.stale;
+                
+                const embed = new EmbedBuilder()
+                    .setTitle('⚠️ Issues Antigas - Sem Atualização há +1 Semana')
+                    .setColor(REPORT_CONFIG.colors.warning)
+                    .setTimestamp();
+
+                if (staleIssues.length === 0) {
+                    embed.setDescription('🎉 Nenhuma issue antiga encontrada!');
+                } else {
+                    const staleList = staleIssues
+                        .slice(0, 20) // Limitar a 20 issues
+                        .map(issue => {
+                            const updatedDate = new Date(issue.updated).toLocaleDateString('pt-BR');
+                            const assignee = issue.assignee ? issue.assignee.name : 'Não atribuída';
+                            return `**${issue.idReadable}**: ${issue.summary}\n📅 Última atualização: ${updatedDate} | 👤 ${assignee}`;
+                        })
+                        .join('\n\n');
+
+                    embed.setDescription(staleList);
+                    
+                    if (staleIssues.length > 20) {
+                        embed.setFooter({ text: `Mostrando 20 de ${staleIssues.length} issues antigas` });
+                    }
+                }
+                
+                await interaction.editReply({
+                    embeds: [embed]
+                });
+            } else {
+                await interaction.editReply('❌ Dados de issues antigas não disponíveis.');
             }
         }
         
