@@ -271,9 +271,20 @@ class YouTrackDashboardEngine {
             console.log(`Query retornou ${response.data?.length || 0} issues`);
             return response.data || [];
         } catch (error) {
+            // Verificar se é erro específico do campo 'resolved'
+            if (error.response?.data?.error === 'invalid_query' && 
+                error.response?.data?.error_children?.some(child => child.error?.includes("Can't recognize resolved"))) {
+                
+                console.error('Erro específico do campo "resolved" detectado. Verificar sintaxe da query.');
+                console.error('Dica: Use "resolved date:" em vez de "resolved:" para filtros de data de resolução');
+                console.error('Exemplo correto: "resolved date: 2025-08-07" ou "resolved date: 2025-08-07T00:00:00 .. 2025-08-07T23:59:59"');
+            }
+            
             console.error('Erro ao buscar issues:', error.response?.data || error.message);
             console.error('Query que falhou:', query);
-            return [];
+            
+            // Re-throw o erro para permitir fallbacks nos métodos chamadores
+            throw error;
         }
     }
 
@@ -292,8 +303,8 @@ class YouTrackDashboardEngine {
         // Queries com horário do Brasil
         const createdTodayQuery = `${baseQuery} created: ${today.startFormatted} .. ${today.endFormatted}`.trim();
         
-        // Para issues resolvidas, usar o campo 'resolved' com range de tempo específico do Brasil
-        const resolvedTodayQuery = `${baseQuery} resolved: ${today.startFormatted} .. ${today.endFormatted}`.trim();
+        // CORREÇÃO: Usar 'resolved date:' em vez de 'resolved:' conforme documentação YouTrack
+        const resolvedTodayQuery = `${baseQuery} resolved date: ${today.startFormatted} .. ${today.endFormatted}`.trim();
         
         const totalOpenQuery = `${baseQuery} ${excludeResolvedStatesQuery}`.trim();
         const inProgressQuery = `${baseQuery} ${this._buildStatesQuery(inProgressStates)}`.trim();
@@ -302,10 +313,48 @@ class YouTrackDashboardEngine {
         const weekAgo = BrazilTimezone.getDateRangeBrazil(7);
         const staleIssuesQuery = `${baseQuery} updated: * .. ${weekAgo.startFormatted} ${excludeResolvedStatesQuery}`.trim();
 
-        // Executar queries
-        const [createdToday, resolvedToday, totalOpen, inProgress, staleIssues] = await Promise.all([
+        // Executar queries com tratamento de erro específico para resolved date
+        let resolvedToday = [];
+        try {
+            resolvedToday = await this.getIssuesWithFilters(resolvedTodayQuery);
+        } catch (error) {
+            console.error('Erro na query resolved date, tentando métodos alternativos:', error);
+            
+            // Fallback 1: Usar apenas a data sem horário
+            try {
+                const resolvedTodayFallback1 = `${baseQuery} resolved date: ${today.dateOnly}`.trim();
+                console.log(`Tentativa 1 - Query simplificada: ${resolvedTodayFallback1}`);
+                resolvedToday = await this.getIssuesWithFilters(resolvedTodayFallback1);
+            } catch (error2) {
+                console.error('Fallback 1 falhou, tentando Fallback 2:', error2);
+                
+                // Fallback 2: Usar status #Resolved e filtrar por updated hoje
+                try {
+                    const resolvedTodayFallback2 = `${baseQuery} #Resolved updated: ${today.startFormatted} .. ${today.endFormatted}`.trim();
+                    console.log(`Tentativa 2 - Query com #Resolved: ${resolvedTodayFallback2}`);
+                    const candidateIssues = await this.getIssuesWithFilters(resolvedTodayFallback2);
+                    
+                    // Filtrar manualmente issues que foram realmente resolvidas hoje
+                    const todayStart = today.start.getTime();
+                    const todayEnd = today.end.getTime();
+                    
+                    resolvedToday = candidateIssues.filter(issue => {
+                        if (!issue.resolved) return false;
+                        const resolvedTime = new Date(issue.resolved).getTime();
+                        return resolvedTime >= todayStart && resolvedTime <= todayEnd;
+                    });
+                    
+                    console.log(`Fallback 2 bem-sucedido: ${candidateIssues.length} candidatos, ${resolvedToday.length} realmente resolvidos hoje`);
+                } catch (error3) {
+                    console.error('Todos os fallbacks falharam, usando lista vazia para issues resolvidas:', error3);
+                    resolvedToday = [];
+                }
+            }
+        }
+
+        // Executar outras queries
+        const [createdToday, totalOpen, inProgress, staleIssues] = await Promise.all([
             this.getIssuesWithFilters(createdTodayQuery),
-            this.getIssuesWithFilters(resolvedTodayQuery),
             this.getIssuesWithFilters(totalOpenQuery),
             this.getIssuesWithFilters(inProgressQuery),
             this.getIssuesWithFilters(staleIssuesQuery)
