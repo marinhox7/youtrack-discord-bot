@@ -20,7 +20,6 @@ const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
 const YOUTRACK_BASE_URL = 'https://braiphub.youtrack.cloud/issues';
 
-// NOVO: ID do canal de aprovação para solicitações de tempo
 const approvalChannelId = '1402836514165231797';
 
 // Inicializar cliente Discord
@@ -577,7 +576,7 @@ class YouTrackReportSystem {
         console.log(`📊 Gerando relatório semanal para projeto: ${projectId || 'todos'}`);
         
         const cacheKey = this.cache.getCacheKey('weekly', projectId);
-        let metrics = this.cache.get(key);
+        let metrics = this.cache.get(cacheKey);
         
         if (!metrics) {
             console.log(`🔄 Cache não encontrado, gerando métricas...`);
@@ -746,14 +745,17 @@ async function addCommentToIssue(issueId, comment, authorName) {
     }
 }
 
-async function logWorkItemTime(issueId, time, comment) {
+async function logWorkItemTime(issueId, time, comment, userLogin) {
     try {
         const payload = {
             date: Date.now(), 
             duration: {
                 presentation: time
             },
-            text: comment
+            text: comment,
+            author: { 
+                login: userLogin 
+            }
         };
         
         await axios.post(`${YOUTRACK_URL}/api/issues/${issueId}/timeTracking/workItems`, payload, {
@@ -1058,12 +1060,21 @@ async function handleTimeApproval(interaction) {
     const newEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
 
     if (action === 'aprovar') {
-        const timeLogged = await logWorkItemTime(issueId, time, `Ajuste de tempo aprovado por: ${approver.username} (via Discord)`);
+        const requesterYouTrackLogin = userMap[requesterId];
+        
+        if (!requesterYouTrackLogin) {
+            newEmbed.setColor(0xff0000).setFooter({ text: `Falha na aprovação. Usuário não mapeado.` });
+            await interaction.message.edit({ embeds: [newEmbed], components: [] });
+            await interaction.editReply(`❌ Erro: O usuário solicitante não está mapeado no userMap.json.`);
+            return;
+        }
+
+        const timeLogged = await logWorkItemTime(issueId, time, `Ajuste de tempo aprovado por: ${approver.username} (via Discord)`, requesterYouTrackLogin);
         
         if (timeLogged.success) {
             newEmbed.setColor(0x00ff00).setFooter({ text: `Aprovado por ${approver.username}` });
             await interaction.message.edit({ embeds: [newEmbed], components: [] });
-            await interaction.editReply(`✅ Tempo de ${time} foi registrado na issue ${issueId}.`);
+            await interaction.editReply(`✅ Tempo de ${time} foi registrado na issue ${issueId} para o usuário ${requesterYouTrackLogin}.`);
             requester?.send(`✅ Sua solicitação de ajuste de tempo para a issue ${issueId} foi aprovada por ${approver.username} e o tempo foi registrado.`);
         } else {
             newEmbed.setColor(0xff0000).setFooter({ text: `Falha na aprovação. Erro: ${timeLogged.error}` });
