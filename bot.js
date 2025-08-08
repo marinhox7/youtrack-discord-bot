@@ -613,9 +613,38 @@ class YouTrackReportSystem {
 
 let reportSystem;
 
-// ==========================================
-// FUNÇÕES EXISTENTES
-// ==========================================
+const WORK_TYPE_IDS = {
+    'Desenvolvimento': '147-0',
+    'Teste': '147-1',
+    'Documentação': '147-2',
+    'Investigação': '147-3',
+    'Implementação': '147-4',
+    'Revisão': '147-5',
+    'Correção': '147-8',
+    'Reunião': '147-9',
+    'Planejamento': '147-10',
+    'Estudo': '147-11',
+    'Prototipagem': '147-12',
+    'Suporte': '147-14',
+};
+
+function convertDurationToMinutes(durationString) {
+    let totalMinutes = 0;
+    const isNegative = durationString.startsWith('-');
+    const cleanString = isNegative ? durationString.substring(1) : durationString;
+
+    const hoursMatch = cleanString.match(/(\d+)h/);
+    if (hoursMatch) {
+        totalMinutes += parseInt(hoursMatch[1]) * 60;
+    }
+
+    const minutesMatch = cleanString.match(/(\d+)m/);
+    if (minutesMatch) {
+        totalMinutes += parseInt(minutesMatch[1]);
+    }
+
+    return isNegative ? -totalMinutes : totalMinutes;
+}
 
 async function getProjectStates(projectId) {
     if (projectStatesCache.has(projectId)) {
@@ -742,21 +771,27 @@ async function addCommentToIssue(issueId, comment, authorName) {
                 error: commandError.response?.data?.error_description || commandError.message 
             };
         }
+        }
     }
-}
 
-async function logWorkItemTime(issueId, time, comment, userLogin) {
+async function logWorkItemTime(issueId, minutes, comment, userLogin, workTypeId) {
     try {
         const payload = {
             date: Date.now(), 
             duration: {
-                presentation: time
+                minutes: minutes
             },
             text: comment,
             author: { 
                 login: userLogin 
             }
         };
+
+        if (workTypeId) {
+            payload.type = {
+                id: workTypeId 
+            };
+        }
         
         await axios.post(`${YOUTRACK_URL}/api/issues/${issueId}/timeTracking/workItems`, payload, {
             headers: {
@@ -777,6 +812,21 @@ client.once('ready', async () => {
     reportSystem = new YouTrackReportSystem(YOUTRACK_URL, YOUTRACK_TOKEN);
 });
 
+const WORK_TYPES = [
+    { label: 'Desenvolvimento', value: 'Desenvolvimento' },
+    { label: 'Revisão', value: 'Revisão' },
+    { label: 'Correção', value: 'Correção' },
+    { label: 'Teste', value: 'Teste' },
+    { label: 'Documentação', value: 'Documentação' },
+    { label: 'Investigação', value: 'Investigação' },
+    { label: 'Implementação', value: 'Implementação' },
+    { label: 'Reunião', value: 'Reunião' },
+    { label: 'Planejamento', value: 'Planejamento' },
+    { label: 'Estudo', value: 'Estudo' },
+    { label: 'Prototipagem', value: 'Prototipagem' },
+    { label: 'Suporte', value: 'Suporte' },
+];
+
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'youtrack') {
@@ -784,36 +834,36 @@ client.on('interactionCreate', async interaction => {
                 await handleReportCommand(interaction);
                 return;
             }
-            if (interaction.options.getSubcommand() === 'solicitar_ajuste') {
-                const modal = new ModalBuilder()
-                    .setCustomId(`ajuste_modal_${interaction.user.id}`)
-                    .setTitle('Solicitar Ajuste de Tempo');
+            // NOVO: Handler para o comando 'adicionar_tempo'
+            if (interaction.options.getSubcommand() === 'adicionar_tempo') {
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId(`work_type_select_adicionar_${interaction.user.id}`)
+                    .setPlaceholder('Selecione o tipo de trabalho')
+                    .addOptions(WORK_TYPES);
 
-                const issueIdInput = new TextInputBuilder()
-                    .setCustomId('issueIdInput')
-                    .setLabel('ID da Issue (Ex: PROJ-123)')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true);
+                const row = new ActionRowBuilder().addComponents(selectMenu);
+                
+                await interaction.reply({
+                    content: 'Por favor, selecione o tipo de trabalho para a sua solicitação de tempo:',
+                    components: [row],
+                    ephemeral: true
+                });
+                return;
+            }
+            // NOVO: Handler para o comando 'subtrair_tempo'
+            if (interaction.options.getSubcommand() === 'subtrair_tempo') {
+                const selectMenu = new StringSelectMenuBuilder()
+                    .setCustomId(`work_type_select_subtrair_${interaction.user.id}`)
+                    .setPlaceholder('Selecione o tipo de trabalho')
+                    .addOptions(WORK_TYPES);
 
-                const timeInput = new TextInputBuilder()
-                    .setCustomId('timeInput')
-                    .setLabel('Tempo a ser ajustado (Ex: 3h, 1h30m, 30m)')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true);
-
-                const reasonInput = new TextInputBuilder()
-                    .setCustomId('reasonInput')
-                    .setLabel('Motivo da solicitação')
-                    .setStyle(TextInputStyle.Paragraph)
-                    .setRequired(true);
-
-                const firstActionRow = new ActionRowBuilder().addComponents(issueIdInput);
-                const secondActionRow = new ActionRowBuilder().addComponents(timeInput);
-                const thirdActionRow = new ActionRowBuilder().addComponents(reasonInput);
-
-                modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
-
-                await interaction.showModal(modal);
+                const row = new ActionRowBuilder().addComponents(selectMenu);
+                
+                await interaction.reply({
+                    content: 'Por favor, selecione o tipo de trabalho para a sua solicitação de correção:',
+                    components: [row],
+                    ephemeral: true
+                });
                 return;
             }
         }
@@ -831,6 +881,45 @@ client.on('interactionCreate', async interaction => {
         }
     }
     
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('work_type_select_')) {
+        const parts = interaction.customId.split('_');
+        const action = parts[2]; // 'adicionar' ou 'subtrair'
+        const selectedWorkType = interaction.values[0];
+        const userId = parts[3];
+
+        const modal = new ModalBuilder()
+            .setCustomId(`ajuste_modal_${action}_${userId}_${selectedWorkType.replace(/\s/g, '_')}`)
+            .setTitle(`${action === 'adicionar' ? 'Adicionar' : 'Corrigir'} Tempo: ${selectedWorkType}`);
+
+        const issueIdInput = new TextInputBuilder()
+            .setCustomId('issueIdInput')
+            .setLabel('ID da Issue (Ex: PROJ-123)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        const timeInput = new TextInputBuilder()
+            .setCustomId('timeInput')
+            .setLabel('Tempo a ser ajustado (Ex: 3h, 1h30m, 30m)')
+            .setPlaceholder(action === 'subtrair' ? 'Ex: 1h30m' : 'Ex: 3h, 1h30m')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        const reasonInput = new TextInputBuilder()
+            .setCustomId('reasonInput')
+            .setLabel('Motivo da solicitação')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(issueIdInput);
+        const secondActionRow = new ActionRowBuilder().addComponents(timeInput);
+        const thirdActionRow = new ActionRowBuilder().addComponents(reasonInput);
+
+        modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
+
+        await interaction.showModal(modal);
+        return;
+    }
+
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
     try {
@@ -1011,11 +1100,15 @@ async function handleReportDrillDown(interaction) {
 async function handleTimeRequestModal(interaction) {
     await interaction.deferReply({ ephemeral: true });
 
+    const parts = interaction.customId.split('_');
     const issueId = interaction.fields.getTextInputValue('issueIdInput');
     const time = interaction.fields.getTextInputValue('timeInput');
     const reason = interaction.fields.getTextInputValue('reasonInput');
-    const requester = interaction.user;
+    const action = parts[2]; // 'adicionar' ou 'subtrair'
+    const requesterId = parts[3];
+    const workType = parts.length > 4 ? parts.slice(4).join(' ') : null;
 
+    const requester = client.users.cache.get(requesterId);
     const approvalChannel = client.channels.cache.get(approvalChannelId);
 
     if (!approvalChannel) {
@@ -1025,17 +1118,17 @@ async function handleTimeRequestModal(interaction) {
 
     const embed = new EmbedBuilder()
         .setTitle(`🕒 Solicitação de Ajuste de Tempo para ${issueId}`)
-        .setDescription(`**Usuário:** ${requester.username}\n**Tempo:** ${time}\n**Motivo:**\n${reason}`)
-        .setColor(0xffa500)
+        .setDescription(`**Usuário:** ${requester.username}\n**Ação:** ${action}\n**Tempo:** ${time}\n**Tipo de Trabalho:** ${workType}\n**Motivo:**\n${reason}`)
+        .setColor(action === 'adicionar' ? 0x00ff00 : 0xff0000)
         .setTimestamp();
 
     const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-            .setCustomId(`aprovar_${issueId}_${time}_${requester.id}`)
+            .setCustomId(`aprovar_${issueId}_${time}_${requesterId}_${workType.replace(/\s/g, '_')}_${action}`)
             .setLabel('Aprovar')
             .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
-            .setCustomId(`rejeitar_${issueId}_${time}_${requester.id}`)
+            .setCustomId(`rejeitar_${issueId}_${time}_${requesterId}_${workType.replace(/\s/g, '_')}_${action}`)
             .setLabel('Rejeitar')
             .setStyle(ButtonStyle.Danger)
     );
@@ -1051,8 +1144,10 @@ async function handleTimeApproval(interaction) {
     const parts = interaction.customId.split('_');
     const action = parts[0];
     const issueId = parts[1];
-    const time = parts[2];
+    const timeString = parts[2];
     const requesterId = parts[3];
+    const workType = parts.length > 5 ? parts.slice(4, -1).join(' ') : null;
+    const timeAction = parts[parts.length - 1]; // 'adicionar' ou 'subtrair'
     const approver = interaction.user;
     
     const requester = client.users.cache.get(requesterId);
@@ -1068,14 +1163,28 @@ async function handleTimeApproval(interaction) {
             await interaction.editReply(`❌ Erro: O usuário solicitante não está mapeado no userMap.json.`);
             return;
         }
+        
+        const workTypeId = WORK_TYPE_IDS[workType];
+        
+        if (!workTypeId) {
+            newEmbed.setColor(0xff0000).setFooter({ text: `Falha na aprovação. Tipo de trabalho não mapeado.` });
+            await interaction.message.edit({ embeds: [newEmbed], components: [] });
+            await interaction.editReply(`❌ Erro: O tipo de trabalho "${workType}" não está mapeado para um ID no código.`);
+            return;
+        }
+        
+        let minutes = convertDurationToMinutes(timeString);
+        if (timeAction === 'subtrair') {
+            minutes = -minutes;
+        }
 
-        const timeLogged = await logWorkItemTime(issueId, time, `Ajuste de tempo aprovado por: ${approver.username} (via Discord)`, requesterYouTrackLogin);
+        const timeLogged = await logWorkItemTime(issueId, minutes, `Ajuste de tempo aprovado por: ${approver.username} (via Discord)`, requesterYouTrackLogin, workTypeId);
         
         if (timeLogged.success) {
             newEmbed.setColor(0x00ff00).setFooter({ text: `Aprovado por ${approver.username}` });
             await interaction.message.edit({ embeds: [newEmbed], components: [] });
-            await interaction.editReply(`✅ Tempo de ${time} foi registrado na issue ${issueId} para o usuário ${requesterYouTrackLogin}.`);
-            requester?.send(`✅ Sua solicitação de ajuste de tempo para a issue ${issueId} foi aprovada por ${approver.username} e o tempo foi registrado.`);
+            await interaction.editReply(`✅ Tempo de ${timeString} foi registrado na issue ${issueId} para o usuário ${requesterYouTrackLogin} como "${workType}".`);
+            requester?.send(`✅ Sua solicitação de ajuste de tempo para a issue ${issueId} foi aprovada por ${approver.username} e o tempo foi registrado como "${workType}".`);
         } else {
             newEmbed.setColor(0xff0000).setFooter({ text: `Falha na aprovação. Erro: ${timeLogged.error}` });
             await interaction.message.edit({ embeds: [newEmbed], components: [] });
@@ -1137,7 +1246,7 @@ app.post('/webhook', async (req, res) => {
         await channel.send({ embeds: [embed], components: [row1] });
         res.status(200).json({ success: true });
     } catch (error) {
-        console.error('Erro no webhook:', error);
+        console.o.error('Erro no webhook:', error);
         res.status(500).json({ error: 'Erro interno' });
     }
 });
