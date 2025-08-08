@@ -3,6 +3,7 @@ import express from 'express';
 import axios from 'axios';
 import { config } from 'dotenv';
 import fs from 'fs';
+import cron from 'node-cron';
 
 // Carregar variáveis de ambiente
 config();
@@ -19,16 +20,16 @@ const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
 const YOUTRACK_BASE_URL = (process.env.YOUTRACK_BASE_URL || 'https://braiphub.youtrack.cloud/issues');
 
 // O approvalChannelId agora busca o ID do arquivo .env para maior segurança
-const approvalChannelId = process.env.DISCORD_CHANNEL_ID; 
+const approvalChannelId = process.env.DISCORD_CHANNEL_ID;
 
 // Inicializar cliente Discord com intents básicos necessários
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, 
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, 
-    GatewayIntentBits.GuildPresences 
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildPresences
   ]
 });
 
@@ -47,6 +48,16 @@ try {
   } catch (e) {
     console.error('Erro ao criar userMap.json de exemplo:', e);
   }
+}
+
+// Carregar estados de projeto a partir do config.json
+let resolvedStates = [];
+try {
+  const configData = fs.readFileSync('config.json', 'utf8');
+  const configJson = JSON.parse(configData);
+  resolvedStates = configJson.youtrack_states.resolved_states || [];
+} catch (error) {
+  console.error('Erro ao carregar config.json:', error);
 }
 
 // Cache para estados de projeto
@@ -168,16 +179,17 @@ class YouTrackDashboardEngine {
     const today = new Date();
     const todayString = today.toISOString().slice(0, 10); // YYYY-MM-DD
 
-    // Queries - adaptação simples; ajuste se sua sintaxe YouTrack for diferente
+    // Queries - adaptação para usar estados do config.json
     const createdQuery = `${baseQuery} created: ${todayString}`;
-    const resolvedQuery = `${baseQuery} resolved: ${todayString}`;
+    const resolvedStatesQuery = resolvedStates.map(state => `{${state}}`).join(' OR ');
+    const resolvedTodayQuery = `${baseQuery} State: {${resolvedStatesQuery}} updated: ${todayString}`;
     const totalOpenQuery = `${baseQuery} #Unresolved`;
     const inProgressQuery = `${baseQuery} State: {In Progress}`; // ajuste se necessário
     const staleQuery = `${baseQuery} updated: *..{minus 7d} #Unresolved`;
 
     const [createdToday, resolvedToday, totalOpen, inProgress, staleIssues] = await Promise.all([
       this.getIssuesWithFilters(createdQuery),
-      this.getIssuesWithFilters(resolvedQuery),
+      this.getIssuesWithFilters(resolvedTodayQuery, 'id,idReadable,summary,created,updated,reporter(login,name),assignee(login,name)'),
       this.getIssuesWithFilters(totalOpenQuery),
       this.getIssuesWithFilters(inProgressQuery),
       this.getIssuesWithFilters(staleQuery)
@@ -213,16 +225,20 @@ class YouTrackDashboardEngine {
     const toISO = (d) => d.toISOString().slice(0, 10);
 
     const thisWeekCreatedQuery = `${baseQuery} created: ${toISO(startThisWeek)}..${toISO(end)}`;
-    const thisWeekResolvedQuery = `${baseQuery} resolved: ${toISO(startThisWeek)}..${toISO(end)}`;
+    
+    // Lógica corrigida para o relatório semanal
+    const resolvedStatesQuery = resolvedStates.map(state => `{${state}}`).join(' OR ');
+    const thisWeekResolvedQuery = `${baseQuery} State: {${resolvedStatesQuery}} updated: ${toISO(startThisWeek)}..${toISO(end)}`;
+    const lastWeekResolvedQuery = `${baseQuery} State: {${resolvedStatesQuery}} updated: ${toISO(startLastWeek)}..${toISO(startThisWeek)}`;
+    
     const lastWeekCreatedQuery = `${baseQuery} created: ${toISO(startLastWeek)}..${toISO(startThisWeek)}`;
-    const lastWeekResolvedQuery = `${baseQuery} resolved: ${toISO(startLastWeek)}..${toISO(startThisWeek)}`;
     const staleQuery = `${baseQuery} updated: *..{minus 7d} #Unresolved`;
 
     const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, staleIssues] = await Promise.all([
       this.getIssuesWithFilters(thisWeekCreatedQuery),
-      this.getIssuesWithFilters(thisWeekResolvedQuery),
+      this.getIssuesWithFilters(thisWeekResolvedQuery, 'id,idReadable,summary,created,updated,reporter(login,name),assignee(login,name)'),
       this.getIssuesWithFilters(lastWeekCreatedQuery),
-      this.getIssuesWithFilters(lastWeekResolvedQuery),
+      this.getIssuesWithFilters(lastWeekResolvedQuery, 'id,idReadable,summary,created,updated,reporter(login,name),assignee(login,name)'),
       this.getIssuesWithFilters(staleQuery)
     ]);
 
