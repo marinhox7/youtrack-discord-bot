@@ -18,7 +18,7 @@ const YOUTRACK_TOKEN = process.env.YOUTRACK_TOKEN;
 const YOUTRACK_URL = process.env.YOUTRACK_URL;
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
-const YOUTRACK_BASE_URL = 'https://braiphub.youtrack.cloud/issues'; // URL base para redirecionamento
+const YOUTRACK_BASE_URL = 'https://braiphub.youtrack.cloud/issues';
 
 // Inicializar cliente Discord
 const client = new Client({
@@ -117,7 +117,8 @@ class YouTrackDashboardEngine {
         };
     }
 
-    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),updater(login,name),state(name),type(name),priority(name)') {
+    // CORREÇÃO: Adicionado customFields no parâmetro de campos para buscar o Assignee customizado
+    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),updater(login,name),state(name),type(name),priority(name),customFields(name,value(name,login))') {
         try {
             console.log(`🔍 Executando query YouTrack: ${query}`);
             const response = await axios.get(`${this.youtrackUrl}/api/issues`, {
@@ -135,7 +136,7 @@ class YouTrackDashboardEngine {
                 console.log(`📋 Estrutura da primeira issue:`, {
                     id: sample.id,
                     reporter: sample.reporter?.login,
-                    assignee: sample.assignee?.login,
+                    assignee_custom: sample.customFields?.find(f => f.name === 'Assignee')?.value,
                     updater: sample.updater?.login,
                     state: sample.state?.name
                 });
@@ -154,12 +155,13 @@ class YouTrackDashboardEngine {
         
         const baseQuery = projectId ? `project: {${projectId}}` : '';
         
+        // CORREÇÃO: A query para issues antigas foi ajustada para a lógica correta
         const [createdToday, resolvedToday, totalOpen, inProgress, staleIssues] = await Promise.all([
             this.getIssuesWithFilters(`${baseQuery} created: Today`),
             this.getResolvedIssuesToday(baseQuery),
             this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
             this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
-            this.getIssuesWithFilters(`${baseQuery} updated: {minus 7d} .. * #Unresolved`)
+            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 7d} #Unresolved`) // SINTAXE CORRIGIDA
         ]);
 
         const userMetrics = this.analyzeByUser(createdToday, resolvedToday);
@@ -206,12 +208,13 @@ class YouTrackDashboardEngine {
     async getWeeklyMetrics(projectId = null) {
         const baseQuery = projectId ? `project: {${projectId}}` : '';
         
+        // CORREÇÃO: A query para issues antigas foi ajustada para a lógica correta
         const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, staleIssues] = await Promise.all([
             this.getIssuesWithFilters(`${baseQuery} created: {This week}`),
             this.getResolvedIssuesThisWeek(baseQuery),
             this.getIssuesWithFilters(`${baseQuery} created: {Last week}`),
             this.getResolvedIssuesLastWeek(baseQuery),
-            this.getIssuesWithFilters(`${baseQuery} updated: {minus 1w} .. * #Unresolved`)
+            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 1w} #Unresolved`) // SINTAXE CORRIGIDA
         ]);
 
         const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
@@ -277,6 +280,7 @@ class YouTrackDashboardEngine {
         return [];
     }
 
+    // CORREÇÃO: Lógica ajustada para encontrar o campo 'Assignee' customizado
     analyzeByUser(createdIssues, resolvedIssues) {
         const users = new Map();
         
@@ -291,13 +295,18 @@ class YouTrackDashboardEngine {
         });
         
         resolvedIssues.forEach(issue => {
-            const resolver = issue.updater?.login ? issue.updater : (issue.assignee?.login ? issue.assignee : null);
-            if (resolver) {
-                const login = resolver.login;
-                if (!users.has(login)) {
-                    users.set(login, { name: resolver.name || resolver.login, created: 0, resolved: 0 });
-                }
-                users.get(login).resolved++;
+            const assigneeField = issue.customFields?.find(field => field.name === 'Assignee');
+            
+            if (assigneeField?.value?.length > 0) {
+                assigneeField.value.forEach(assignee => {
+                    if (assignee?.login) {
+                        const login = assignee.login;
+                        if (!users.has(login)) {
+                            users.set(login, { name: assignee.name || assignee.login, created: 0, resolved: 0 });
+                        }
+                        users.get(login).resolved++;
+                    }
+                });
             }
         });
         
@@ -446,15 +455,12 @@ class ReportTemplateEngine {
             .setTimestamp();
 
         const userDetails = (Array.isArray(userMetrics) ? userMetrics : [])
-            .sort((a, b) => b.productivity - a.productivity)
+            .sort((a, b) => b.resolved - a.resolved)
             .map(user => {
-                const productivityEmoji = user.productivity > 0 ? emojis.trend_up :
-                                         user.productivity < 0 ? emojis.trend_down : '➖';
                 return [
                     `**${user.name}**`,
                     `${emojis.issue} Criadas: ${user.created}`,
-                    `${emojis.done} Resolvidas: ${user.resolved}`,
-                    `${productivityEmoji} Saldo: ${user.productivity > 0 ? '+' : ''}${user.productivity}`
+                    `${emojis.done} Resolvidas: ${user.resolved}`
                 ].join('\n');
             })
             .join('\n\n');
@@ -548,8 +554,8 @@ class YouTrackReportSystem {
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('daily', metrics, projectName);
         
-        // CORREÇÃO: Criar URL de link para issues antigas (7 dias)
-        const staleIssuesQuery = `updated: {minus 7d} .. * #Unresolved`;
+        // CORREÇÃO: Query de issues antigas ajustada
+        const staleIssuesQuery = `updated: * .. {minus 7d} #Unresolved`;
         const encodedStaleQuery = encodeURIComponent(staleIssuesQuery);
         const staleUrl = `${YOUTRACK_BASE_URL}?q=${encodedStaleQuery}`;
         
@@ -559,7 +565,6 @@ class YouTrackReportSystem {
                     .setCustomId(`report_drill_users_daily`)
                     .setLabel('📂 Ver por Usuário')
                     .setStyle(ButtonStyle.Secondary),
-                // Botão de LINK para YouTrack
                 new ButtonBuilder()
                     .setLabel('⚠️ Issues Antigas')
                     .setStyle(ButtonStyle.Link)
@@ -588,8 +593,8 @@ class YouTrackReportSystem {
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('weekly', metrics, projectName);
 
-        // CORREÇÃO: Criar URL de link para issues antigas (1 semana)
-        const staleIssuesQuery = `updated: {minus 1w} .. * #Unresolved`;
+        // CORREÇÃO: Query de issues antigas ajustada
+        const staleIssuesQuery = `updated: * .. {minus 1w} #Unresolved`;
         const encodedStaleQuery = encodeURIComponent(staleIssuesQuery);
         const staleUrl = `${YOUTRACK_BASE_URL}?q=${encodedStaleQuery}`;
         
@@ -599,7 +604,6 @@ class YouTrackReportSystem {
                     .setCustomId(`report_drill_users_weekly`)
                     .setLabel('👥 Ver por Usuário')
                     .setStyle(ButtonStyle.Primary),
-                // Botão de LINK para YouTrack
                 new ButtonBuilder()
                     .setLabel('⚠️ Issues Antigas')
                     .setStyle(ButtonStyle.Link)
@@ -625,10 +629,7 @@ async function getProjectStates(projectId) {
         const projectFieldsResponse = await axios.get(
             `${YOUTRACK_URL}/api/admin/projects/${projectId}/customFields?fields=id,field(name),$type`,
             {
-                headers: {
-                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
+                headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
             }
         );
         const customFields = projectFieldsResponse.data;
@@ -641,10 +642,7 @@ async function getProjectStates(projectId) {
         const bundleValuesResponse = await axios.get(
             `${YOUTRACK_URL}/api/admin/projects/${projectId}/customFields/${stateField.id}/bundle/values?fields=id,name,isResolved,ordinal`,
             {
-                headers: {
-                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
+                headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
             }
         );
         const states = bundleValuesResponse.data;
@@ -663,10 +661,7 @@ async function assignIssue(issueId, userLogin) {
             issues: [{ idReadable: issueId }]
         };
         await axios.post(`${YOUTRACK_URL}/api/commands`, commandPayload, {
-            headers: {
-                Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                'Content-Type': 'application/json'
-            }
+            headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
         });
         return true;
     } catch (error) {
@@ -678,10 +673,7 @@ async function assignIssue(issueId, userLogin) {
                     value: { login: userLogin }
                 }]
             }, {
-                headers: {
-                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json'
-                }
+                headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
             });
             return true;
         } catch (fallbackError) {
@@ -701,10 +693,7 @@ async function changeIssueState(issueId, stateId) {
             }]
         };
         await axios.post(`${YOUTRACK_URL}/api/issues/${issueId}`, payload, {
-            headers: {
-                Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                'Content-Type': 'application/json'
-            }
+            headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' }
         });
         return true;
     } catch (error) {
@@ -720,12 +709,7 @@ async function addCommentToIssue(issueId, comment, authorName) {
             try {
                 const resolveResponse = await axios.get(
                     `${YOUTRACK_URL}/api/issues/${issueId}?fields=id`,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                            'Content-Type': 'application/json'
-                        }
-                    }
+                    { headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' } }
                 );
                 internalId = resolveResponse.data.id;
             } catch (resolveError) {
@@ -734,20 +718,12 @@ async function addCommentToIssue(issueId, comment, authorName) {
         }
         const payload = {
             text: `${comment}\n\n*— ${authorName}*`,
-            visibility: {
-                "$type": "UnlimitedVisibility"
-            }
+            visibility: { "$type": "UnlimitedVisibility" }
         };
         const response = await axios.post(
             `${YOUTRACK_URL}/api/issues/${internalId}/comments`,
             payload,
-            {
-                headers: {
-                    Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                }
-            }
+            { headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json', 'Accept': 'application/json' } }
         );
         return { success: true, commentId: response.data.id, method: 'REST' };
     } catch (error) {
@@ -760,12 +736,7 @@ async function addCommentToIssue(issueId, comment, authorName) {
             const commandResponse = await axios.post(
                 `${YOUTRACK_URL}/api/commands`,
                 commandPayload,
-                {
-                    headers: {
-                        Authorization: `Bearer ${YOUTRACK_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    }
-                }
+                { headers: { Authorization: `Bearer ${YOUTRACK_TOKEN}`, 'Content-Type': 'application/json' } }
             );
             return { success: true, method: 'Commands' };
         } catch (commandError) {
