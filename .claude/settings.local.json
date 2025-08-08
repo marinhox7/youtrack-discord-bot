@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__ide__getDiagnostics",
+      "Bash(node:*)",
+      "Bash(timeout:*)",
+      "Bash(taskkill:*)"
+    ],
+    "deny": []
+  }
+}
