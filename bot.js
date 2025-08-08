@@ -116,9 +116,9 @@ class YouTrackDashboardEngine {
         };
     }
 
-    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),state(name),type(name),priority(name)') {
+    async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),assignee(login,name),updater(login,name),state(name),type(name),priority(name)') {
         try {
-            console.log(`Executando query YouTrack: ${query}`);
+            console.log(`🔍 Executando query YouTrack: ${query}`);
             const response = await axios.get(`${this.youtrackUrl}/api/issues`, {
                 headers: this.headers,
                 params: {
@@ -127,27 +127,40 @@ class YouTrackDashboardEngine {
                     '$top': 1000 // Limite alto para análises
                 }
             });
-            console.log(`Query retornou ${(response.data || []).length} issues`);
+            console.log(`✅ Query retornou ${(response.data || []).length} issues`);
+            
+            // Log de debug para estrutura de dados
+            if (response.data && response.data.length > 0) {
+                const sample = response.data[0];
+                console.log(`📋 Estrutura da primeira issue:`, {
+                    id: sample.id,
+                    reporter: sample.reporter?.login,
+                    assignee: sample.assignee?.login,
+                    updater: sample.updater?.login,
+                    state: sample.state?.name
+                });
+            }
+            
             return response.data || [];
         } catch (error) {
-            console.error('Erro ao buscar issues:', error.response?.data || error.message);
+            console.error('❌ Erro ao buscar issues:', error.response?.data || error.message);
             
             // Log da query que falhou para debug
-            console.log(`Query que falhou: ${query}`);
+            console.log(`💥 Query que falhou: ${query}`);
             
             // Detecção específica de erros comuns
             if (error.response?.data?.error_children) {
                 const errorMessages = error.response.data.error_children.map(e => e.error);
                 
                 if (errorMessages.some(msg => msg.includes('resolved'))) {
-                    console.log('Erro específico do campo "resolved" detectado. Verificar sintaxe da query.');
-                    console.log('Dica: Use "resolved date:" em vez de "resolved:" para filtros de data de resolução');
-                    console.log('Exemplo correto: "resolved date: 2025-08-07" ou "resolved date: 2025-08-07T00:00:00 .. 2025-08-07T23:59:59"');
+                    console.log('🔧 Erro específico do campo "resolved" detectado. Verificar sintaxe da query.');
+                    console.log('💡 Dica: Use "resolved date:" em vez de "resolved:" para filtros de data de resolução');
+                    console.log('📖 Exemplo correto: "resolved date: 2025-08-07" ou "resolved date: 2025-08-07T00:00:00 .. 2025-08-07T23:59:59"');
                 }
                 
                 if (errorMessages.some(msg => msg.includes('Priority') || msg.includes('Critical'))) {
-                    console.log('Erro específico de prioridade detectado. Verificar valores válidos de prioridade.');
-                    console.log('Dica: Use valores exatos como aparecem no YouTrack, ex: "Show-stopper", "Critical", etc.');
+                    console.log('🔧 Erro específico de prioridade detectado. Verificar valores válidos de prioridade.');
+                    console.log('💡 Dica: Use valores exatos como aparecem no YouTrack, ex: "Show-stopper", "Critical", etc.');
                 }
             }
             
@@ -156,6 +169,8 @@ class YouTrackDashboardEngine {
     }
 
     async getDailyMetrics(projectId = null) {
+        console.log(`📊 Gerando métricas diárias para projeto: ${projectId || 'todos'}`);
+        
         const baseQuery = projectId ? `project: {${projectId}}` : '';
         
         const [createdToday, resolvedToday, totalOpen, inProgress] = await Promise.all([
@@ -171,6 +186,10 @@ class YouTrackDashboardEngine {
         // Issues antigas (não atualizadas na semana atual)
         const staleIssues = await this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 7d} #Unresolved`);
 
+        // CORREÇÃO CRÍTICA: Gerar userMetrics aqui mesmo
+        const userMetrics = this.analyzeByUser(createdToday, resolvedToday);
+        console.log(`👥 UserMetrics geradas para daily: ${userMetrics.length} usuários`);
+
         return {
             createdToday: createdToday.length,
             resolvedToday: resolvedToday.length,
@@ -178,6 +197,8 @@ class YouTrackDashboardEngine {
             inProgress: inProgress.length,
             staleIssues: staleIssues.length,
             netChange: createdToday.length - resolvedToday.length,
+            // ADICIONAR userMetrics aos dados retornados
+            userMetrics: userMetrics,
             issues: {
                 created: createdToday,
                 resolved: resolvedToday,
@@ -231,7 +252,7 @@ class YouTrackDashboardEngine {
         ]);
 
         // Análise por usuário com dados da semana
-        const userMetrics = await this.analyzeByUser(thisWeekCreated, thisWeekResolved);
+        const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
         
         return {
             thisWeek: {
@@ -312,63 +333,61 @@ class YouTrackDashboardEngine {
         return [];
     }
 
-    // NOVA FUNÇÃO: Obtém o resolvedor real de uma issue usando a API de histórico de atividades
-    async getIssueResolver(issueId) {
-        try {
-            const response = await axios.get(
-                `${this.youtrackUrl}/api/issues/${issueId}/activities?categories=CustomFieldCategory&fields=author(login,name),timestamp,field(name),added(name,isResolved),removed(name)`,
-                { headers: this.headers }
-            );
-
-            const activities = response.data;
-
-            // Encontrar o usuário que mudou o estado para um valor resolvido
-            for (const activity of activities) {
-                if (activity.field?.name === 'State' &&
-                    activity.added?.some(state => state.isResolved)) {
-                    return activity.author;
-                }
-            }
-        } catch (error) {
-            console.error(`Erro ao buscar resolvedor para issue ${issueId}:`, error.response?.data || error.message);
-        }
-        return null; // Nenhum resolvedor encontrado
-    }
-
-    // FUNÇÃO ANTIGA MODIFICADA PARA USAR getIssueResolver()
-    async analyzeByUser(createdIssues, resolvedIssues) {
+    analyzeByUser(createdIssues, resolvedIssues) {
         const users = new Map();
         
-        // Contar issues criadas por usuário
+        console.log(`📊 Analisando usuários: ${createdIssues.length} criadas, ${resolvedIssues.length} resolvidas`);
+        
+        // Contar issues criadas por usuário (reporter)
         createdIssues.forEach(issue => {
-            if (issue.reporter) {
+            if (issue.reporter && issue.reporter.login) {
                 const login = issue.reporter.login;
                 if (!users.has(login)) {
-                    users.set(login, { name: issue.reporter.name, created: 0, resolved: 0 });
+                    users.set(login, { 
+                        name: issue.reporter.name || issue.reporter.login, 
+                        created: 0, 
+                        resolved: 0 
+                    });
                 }
                 users.get(login).created++;
             }
         });
         
-        // Contar issues resolvidas por assignee
-        for (const issue of resolvedIssues) {
-            const resolver = await this.getIssueResolver(issue.id);
+        // CORREÇÃO: Usar updater em vez de assignee para issues resolvidas
+        resolvedIssues.forEach(issue => {
+            // Tentar múltiplos campos para identificar quem resolveu
+            let resolver = null;
+            
+            if (issue.updater && issue.updater.login) {
+                resolver = issue.updater;
+            } else if (issue.assignee && issue.assignee.login) {
+                resolver = issue.assignee;
+            }
+            
             if (resolver) {
                 const login = resolver.login;
                 if (!users.has(login)) {
-                    users.set(login, { name: resolver.name, created: 0, resolved: 0 });
+                    users.set(login, { 
+                        name: resolver.name || resolver.login, 
+                        created: 0, 
+                        resolved: 0 
+                    });
                 }
                 users.get(login).resolved++;
             }
-        }
-
-        return Array.from(users.entries()).map(([login, data]) => ({
+        });
+        
+        const result = Array.from(users.entries()).map(([login, data]) => ({
             login,
             name: data.name,
             created: data.created,
             resolved: data.resolved,
             productivity: data.resolved - data.created
         }));
+        
+        console.log(`👥 Resultado da análise de usuários:`, result.map(u => `${u.name}: ${u.created}c/${u.resolved}r`).join(', '));
+        
+        return result;
     }
 
     calculateTrend(oldValue, newValue) {
@@ -594,13 +613,26 @@ class YouTrackReportSystem {
     }
 
     async generateDailyReport(projectId = null) {
+        console.log(`📊 Gerando relatório diário para projeto: ${projectId || 'todos'}`);
+        
         const cacheKey = this.cache.getCacheKey('daily', projectId);
         let metrics = this.cache.get(cacheKey);
         
         if (!metrics) {
+            console.log(`🔄 Cache não encontrado, gerando métricas...`);
             metrics = await this.engine.getDailyMetrics(projectId);
             this.cache.set(cacheKey, metrics);
+            console.log(`💾 Métricas salvas no cache com chave: ${cacheKey}`);
+        } else {
+            console.log(`⚡ Usando métricas do cache`);
         }
+        
+        // Debug das métricas
+        console.log(`📈 Métricas diárias:`, {
+            created: metrics.createdToday,
+            resolved: metrics.resolvedToday,
+            userMetrics: metrics.userMetrics?.length || 0
+        });
         
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('daily', metrics, projectName);
@@ -623,13 +655,27 @@ class YouTrackReportSystem {
     }
 
     async generateWeeklyReport(projectId = null) {
+        console.log(`📊 Gerando relatório semanal para projeto: ${projectId || 'todos'}`);
+        
         const cacheKey = this.cache.getCacheKey('weekly', projectId);
         let metrics = this.cache.get(cacheKey);
         
         if (!metrics) {
+            console.log(`🔄 Cache não encontrado, gerando métricas...`);
             metrics = await this.engine.getWeeklyMetrics(projectId);
             this.cache.set(cacheKey, metrics);
+            console.log(`💾 Métricas salvas no cache com chave: ${cacheKey}`);
+        } else {
+            console.log(`⚡ Usando métricas do cache`);
         }
+        
+        // Debug das métricas
+        console.log(`📈 Métricas semanais:`, {
+            created: metrics.thisWeek.created,
+            resolved: metrics.thisWeek.resolved,
+            userMetrics: metrics.userMetrics?.length || 0,
+            staleIssues: metrics.staleIssues
+        });
         
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('weekly', metrics, projectName);
@@ -1190,31 +1236,97 @@ async function handleReportDrillDown(interaction) {
     await interaction.deferReply({ flags: 64 });
     
     try {
-        const action = interaction.customId.split('_')[2];
-        const period = interaction.customId.split('_')[3];
+        const parts = interaction.customId.split('_');
+        console.log(`🔧 Debug drill-down - CustomId: ${interaction.customId}, Parts:`, parts);
+        
+        // Mapear os diferentes formatos de customId
+        let action, period;
+        
+        if (parts.length === 4) {
+            // Formato: report_drill_users_daily ou report_drill_stale_weekly
+            action = parts[2]; // users, stale, issues
+            period = parts[3]; // daily, weekly
+        } else if (parts.length === 5) {
+            // Formato: report_drill_issues_stale
+            action = parts[2]; // issues
+            period = parts[3]; // stale (será convertido para daily)
+            if (action === 'issues' && parts[3] === 'stale') {
+                period = 'daily'; // Issues stale são do relatório diário
+            }
+        }
+        
+        console.log(`🎯 Processando drill-down - Action: ${action}, Period: ${period}`);
         
         if (action === 'users') {
-            const cacheKey = reportSystem.cache.getCacheKey(period, null);
-            const cachedMetrics = reportSystem.cache.get(cacheKey);
+            // CORREÇÃO CRÍTICA: Tentar múltiplas chaves de cache
+            const possibleKeys = [
+                reportSystem.cache.getCacheKey(period, null),
+                reportSystem.cache.getCacheKey(period, undefined),
+                reportSystem.cache.getCacheKey(period, 'all'),
+                `${period}_all_{}`
+            ];
             
-            if (cachedMetrics && cachedMetrics.userMetrics) {
+            console.log(`🔍 Tentando chaves de cache:`, possibleKeys);
+            
+            let cachedMetrics = null;
+            let usedKey = null;
+            
+            // Tentar cada chave até encontrar dados
+            for (const cacheKey of possibleKeys) {
+                cachedMetrics = reportSystem.cache.get(cacheKey);
+                if (cachedMetrics) {
+                    usedKey = cacheKey;
+                    break;
+                }
+            }
+            
+            console.log(`📦 Cache encontrado:`, cachedMetrics ? `Sim (chave: ${usedKey})` : 'Não');
+            console.log(`🗄️ Chaves disponíveis no cache:`, Array.from(reportSystem.cache.cache.keys()));
+            
+            if (cachedMetrics) {
+                console.log(`👥 UserMetrics disponível:`, cachedMetrics.userMetrics ? `${cachedMetrics.userMetrics.length} usuários` : 'Não');
+                
+                // Debug detalhado dos userMetrics
+                if (cachedMetrics.userMetrics && cachedMetrics.userMetrics.length > 0) {
+                    console.log(`🔍 Primeiros usuários:`, cachedMetrics.userMetrics.slice(0, 3).map(u => `${u.name}: ${u.created}c/${u.resolved}r`));
+                }
+            }
+            
+            if (cachedMetrics && cachedMetrics.userMetrics && cachedMetrics.userMetrics.length > 0) {
                 const result = await reportSystem.generateUserDetailReport(cachedMetrics.userMetrics, period);
                 await interaction.editReply({
                     embeds: [result.embed],
                     components: result.components
                 });
             } else {
-                await interaction.editReply('❌ Dados não disponíveis. Execute o relatório principal primeiro.');
+                console.log(`❌ Nenhum cache válido encontrado ou userMetrics vazio`);
+                await interaction.editReply(`❌ Dados não disponíveis. Execute o relatório principal primeiro.\n\n**Debug Info:**\nChaves testadas: ${possibleKeys.join(', ')}\nChaves disponíveis: ${Array.from(reportSystem.cache.cache.keys()).join(', ')}`);
             }
-        } else if (action === 'stale') {
-            const cacheKey = reportSystem.cache.getCacheKey(period, null);
-            const cachedMetrics = reportSystem.cache.get(cacheKey);
+            
+        } else if (action === 'stale' || action === 'issues') {
+            // Buscar issues antigas - usar mesma lógica de múltiplas chaves
+            const actualPeriod = action === 'issues' ? 'daily' : period;
+            const possibleKeys = [
+                reportSystem.cache.getCacheKey(actualPeriod, null),
+                reportSystem.cache.getCacheKey(actualPeriod, undefined),
+                reportSystem.cache.getCacheKey(actualPeriod, 'all'),
+                `${actualPeriod}_all_{}`
+            ];
+            
+            console.log(`🔍 Buscando issues antigas com chaves:`, possibleKeys);
+            
+            let cachedMetrics = null;
+            for (const cacheKey of possibleKeys) {
+                cachedMetrics = reportSystem.cache.get(cacheKey);
+                if (cachedMetrics) break;
+            }
             
             if (cachedMetrics && cachedMetrics.issues && cachedMetrics.issues.stale) {
                 const staleIssues = cachedMetrics.issues.stale;
+                console.log(`📋 Issues antigas encontradas: ${staleIssues.length}`);
                 
                 const embed = new EmbedBuilder()
-                    .setTitle('⚠️ Issues Antigas - Sem Atualização há +1 Semana')
+                    .setTitle(`⚠️ Issues Antigas - Sem Atualização há +${actualPeriod === 'daily' ? '7 dias' : '1 semana'}`)
                     .setColor(REPORT_CONFIG.colors.warning)
                     .setTimestamp();
 
@@ -1241,12 +1353,13 @@ async function handleReportDrillDown(interaction) {
                     embeds: [embed]
                 });
             } else {
+                console.log(`❌ Issues antigas não encontradas no cache`);
                 await interaction.editReply('❌ Dados de issues antigas não disponíveis.');
             }
         }
         
     } catch (error) {
-        console.error('Erro no drill-down:', error);
+        console.error('❌ Erro no drill-down:', error);
         await interaction.editReply('❌ Erro ao carregar detalhes');
     }
 }
