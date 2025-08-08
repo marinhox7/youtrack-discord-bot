@@ -20,6 +20,9 @@ const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
 const YOUTRACK_BASE_URL = 'https://braiphub.youtrack.cloud/issues';
 
+// NOVO: ID do canal de aprovação para solicitações de tempo
+const approvalChannelId = '1402836514165231797';
+
 // Inicializar cliente Discord
 const client = new Client({
     intents: [
@@ -117,7 +120,6 @@ class YouTrackDashboardEngine {
         };
     }
 
-    // CORREÇÃO: Adicionado customFields no parâmetro de campos para buscar o Assignee customizado
     async getIssuesWithFilters(query, fields = 'id,idReadable,summary,created,updated,resolved,reporter(login,name),updater(login,name),state(name),type(name),priority(name),customFields(name,value(name,login))') {
         try {
             console.log(`🔍 Executando query YouTrack: ${query}`);
@@ -155,13 +157,12 @@ class YouTrackDashboardEngine {
         
         const baseQuery = projectId ? `project: {${projectId}}` : '';
         
-        // CORREÇÃO: A query para issues antigas foi ajustada para a lógica correta
         const [createdToday, resolvedToday, totalOpen, inProgress, staleIssues] = await Promise.all([
             this.getIssuesWithFilters(`${baseQuery} created: Today`),
             this.getResolvedIssuesToday(baseQuery),
             this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
             this.getIssuesWithFilters(`${baseQuery} #Unresolved`),
-            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 7d} #Unresolved`) // SINTAXE CORRIGIDA
+            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 7d} #Unresolved`)
         ]);
 
         const userMetrics = this.analyzeByUser(createdToday, resolvedToday);
@@ -208,13 +209,12 @@ class YouTrackDashboardEngine {
     async getWeeklyMetrics(projectId = null) {
         const baseQuery = projectId ? `project: {${projectId}}` : '';
         
-        // CORREÇÃO: A query para issues antigas foi ajustada para a lógica correta
         const [thisWeekCreated, thisWeekResolved, lastWeekCreated, lastWeekResolved, staleIssues] = await Promise.all([
             this.getIssuesWithFilters(`${baseQuery} created: {This week}`),
             this.getResolvedIssuesThisWeek(baseQuery),
             this.getIssuesWithFilters(`${baseQuery} created: {Last week}`),
             this.getResolvedIssuesLastWeek(baseQuery),
-            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 1w} #Unresolved`) // SINTAXE CORRIGIDA
+            this.getIssuesWithFilters(`${baseQuery} updated: * .. {minus 1w} #Unresolved`)
         ]);
 
         const userMetrics = this.analyzeByUser(thisWeekCreated, thisWeekResolved);
@@ -280,7 +280,6 @@ class YouTrackDashboardEngine {
         return [];
     }
 
-    // CORREÇÃO: Lógica ajustada para encontrar o campo 'Assignee' customizado
     analyzeByUser(createdIssues, resolvedIssues) {
         const users = new Map();
         
@@ -554,7 +553,6 @@ class YouTrackReportSystem {
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('daily', metrics, projectName);
         
-        // CORREÇÃO: Query de issues antigas ajustada
         const staleIssuesQuery = `updated: * .. {minus 7d} #Unresolved`;
         const encodedStaleQuery = encodeURIComponent(staleIssuesQuery);
         const staleUrl = `${YOUTRACK_BASE_URL}?q=${encodedStaleQuery}`;
@@ -579,7 +577,7 @@ class YouTrackReportSystem {
         console.log(`📊 Gerando relatório semanal para projeto: ${projectId || 'todos'}`);
         
         const cacheKey = this.cache.getCacheKey('weekly', projectId);
-        let metrics = this.cache.get(cacheKey);
+        let metrics = this.cache.get(key);
         
         if (!metrics) {
             console.log(`🔄 Cache não encontrado, gerando métricas...`);
@@ -593,7 +591,6 @@ class YouTrackReportSystem {
         const projectName = projectId || 'Todos os Projetos';
         const embed = this.templates.generateReport('weekly', metrics, projectName);
 
-        // CORREÇÃO: Query de issues antigas ajustada
         const staleIssuesQuery = `updated: * .. {minus 1w} #Unresolved`;
         const encodedStaleQuery = encodeURIComponent(staleIssuesQuery);
         const staleUrl = `${YOUTRACK_BASE_URL}?q=${encodedStaleQuery}`;
@@ -749,42 +746,33 @@ async function addCommentToIssue(issueId, comment, authorName) {
     }
 }
 
+async function logWorkItemTime(issueId, time, comment) {
+    try {
+        const payload = {
+            date: Date.now(), 
+            duration: {
+                presentation: time
+            },
+            text: comment
+        };
+        
+        await axios.post(`${YOUTRACK_URL}/api/issues/${issueId}/timeTracking/workItems`, payload, {
+            headers: {
+                Authorization: `Bearer ${YOUTRACK_TOKEN}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        return { success: true };
+    } catch (error) {
+        console.error(`Erro ao registrar tempo na issue ${issueId}:`, error.response?.data || error.message);
+        return { success: false, error: error.response?.data?.error || error.message };
+    }
+}
+
 client.once('ready', async () => {
     console.log(`Bot Discord conectado como: ${client.user.tag}`);
     reportSystem = new YouTrackReportSystem(YOUTRACK_URL, YOUTRACK_TOKEN);
-    const commands = [
-        new SlashCommandBuilder()
-            .setName('youtrack')
-            .setDescription('Comandos do YouTrack')
-            .addSubcommand(subcommand =>
-                subcommand
-                    .setName('report')
-                    .setDescription('Gerar relatório')
-                    .addStringOption(option =>
-                        option
-                            .setName('tipo')
-                            .setDescription('Tipo de relatório')
-                            .setRequired(true)
-                            .addChoices(
-                                { name: '📅 Diário', value: 'daily' },
-                                { name: '📊 Semanal', value: 'weekly' }
-                            )
-                    )
-                    .addStringOption(option =>
-                        option
-                            .setName('projeto')
-                            .setDescription('ID do projeto (opcional)')
-                            .setRequired(false)
-                    )
-            )
-    ];
-
-    try {
-        await client.application.commands.set(commands);
-        console.log('Comandos slash registrados com sucesso!');
-    } catch (error) {
-        console.error('Erro ao registrar comandos slash:', error);
-    }
 });
 
 client.on('interactionCreate', async interaction => {
@@ -794,30 +782,76 @@ client.on('interactionCreate', async interaction => {
                 await handleReportCommand(interaction);
                 return;
             }
+            if (interaction.options.getSubcommand() === 'solicitar_ajuste') {
+                const modal = new ModalBuilder()
+                    .setCustomId(`ajuste_modal_${interaction.user.id}`)
+                    .setTitle('Solicitar Ajuste de Tempo');
+
+                const issueIdInput = new TextInputBuilder()
+                    .setCustomId('issueIdInput')
+                    .setLabel('ID da Issue (Ex: PROJ-123)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const timeInput = new TextInputBuilder()
+                    .setCustomId('timeInput')
+                    .setLabel('Tempo a ser ajustado (Ex: 3h, 1h30m, 30m)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const reasonInput = new TextInputBuilder()
+                    .setCustomId('reasonInput')
+                    .setLabel('Motivo da solicitação')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
+
+                const firstActionRow = new ActionRowBuilder().addComponents(issueIdInput);
+                const secondActionRow = new ActionRowBuilder().addComponents(timeInput);
+                const thirdActionRow = new ActionRowBuilder().addComponents(reasonInput);
+
+                modal.addComponents(firstActionRow, secondActionRow, thirdActionRow);
+
+                await interaction.showModal(modal);
+                return;
+            }
         }
     }
     
-    if (interaction.isButton() && interaction.customId.startsWith('report_drill_')) {
-        await handleReportDrillDown(interaction);
-        return;
+    if (interaction.isButton()) {
+        if (interaction.customId.startsWith('report_drill_')) {
+            await handleReportDrillDown(interaction);
+            return;
+        }
+
+        if (interaction.customId.startsWith('aprovar_') || interaction.customId.startsWith('rejeitar_')) {
+            await handleTimeApproval(interaction);
+            return;
+        }
     }
     
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
     try {
-        if (interaction.isModalSubmit() && interaction.customId.startsWith('comment_modal_')) {
-            const issueId = interaction.customId.replace('comment_modal_', '');
-            const commentText = interaction.fields.getTextInputValue('comment_input');
-            const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
-            
-            const result = await addCommentToIssue(issueId, commentText, authorName);
-            
-            if (result.success) {
-                await interaction.reply({ content: `✅ Comentário adicionado à issue ${issueId}!`, flags: 64 });
-            } else {
-                await interaction.reply({ content: `❌ Erro ao adicionar comentário: ${result.error}`, flags: 64 });
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId.startsWith('ajuste_modal_')) {
+                await handleTimeRequestModal(interaction);
+                return;
             }
-            return;
+            
+            if (interaction.customId.startsWith('comment_modal_')) {
+                const issueId = interaction.customId.replace('comment_modal_', '');
+                const commentText = interaction.fields.getTextInputValue('comment_input');
+                const authorName = `${interaction.user.globalName || interaction.user.username} (via Discord)`;
+                
+                const result = await addCommentToIssue(issueId, commentText, authorName);
+                
+                if (result.success) {
+                    await interaction.reply({ content: `✅ Comentário adicionado à issue ${issueId}!`, flags: 64 });
+                } else {
+                    await interaction.reply({ content: `❌ Erro ao adicionar comentário: ${result.error}`, flags: 64 });
+                }
+                return;
+            }
         }
         
         let issueId;
@@ -969,6 +1003,79 @@ async function handleReportDrillDown(interaction) {
     } catch (error) {
         console.error('❌ Erro no drill-down:', error);
         await interaction.editReply('❌ Erro ao carregar detalhes');
+    }
+}
+
+async function handleTimeRequestModal(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const issueId = interaction.fields.getTextInputValue('issueIdInput');
+    const time = interaction.fields.getTextInputValue('timeInput');
+    const reason = interaction.fields.getTextInputValue('reasonInput');
+    const requester = interaction.user;
+
+    const approvalChannel = client.channels.cache.get(approvalChannelId);
+
+    if (!approvalChannel) {
+        await interaction.editReply('❌ Erro: Canal de aprovação não encontrado. Verifique a configuração.');
+        return;
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle(`🕒 Solicitação de Ajuste de Tempo para ${issueId}`)
+        .setDescription(`**Usuário:** ${requester.username}\n**Tempo:** ${time}\n**Motivo:**\n${reason}`)
+        .setColor(0xffa500)
+        .setTimestamp();
+
+    const buttons = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`aprovar_${issueId}_${time}_${requester.id}`)
+            .setLabel('Aprovar')
+            .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId(`rejeitar_${issueId}_${time}_${requester.id}`)
+            .setLabel('Rejeitar')
+            .setStyle(ButtonStyle.Danger)
+    );
+
+    await approvalChannel.send({ embeds: [embed], components: [buttons] });
+    await interaction.editReply('✅ Sua solicitação foi enviada para aprovação.');
+    return;
+}
+
+async function handleTimeApproval(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const parts = interaction.customId.split('_');
+    const action = parts[0];
+    const issueId = parts[1];
+    const time = parts[2];
+    const requesterId = parts[3];
+    const approver = interaction.user;
+    
+    const requester = client.users.cache.get(requesterId);
+    
+    const newEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+
+    if (action === 'aprovar') {
+        const timeLogged = await logWorkItemTime(issueId, time, `Ajuste de tempo aprovado por: ${approver.username} (via Discord)`);
+        
+        if (timeLogged.success) {
+            newEmbed.setColor(0x00ff00).setFooter({ text: `Aprovado por ${approver.username}` });
+            await interaction.message.edit({ embeds: [newEmbed], components: [] });
+            await interaction.editReply(`✅ Tempo de ${time} foi registrado na issue ${issueId}.`);
+            requester?.send(`✅ Sua solicitação de ajuste de tempo para a issue ${issueId} foi aprovada por ${approver.username} e o tempo foi registrado.`);
+        } else {
+            newEmbed.setColor(0xff0000).setFooter({ text: `Falha na aprovação. Erro: ${timeLogged.error}` });
+            await interaction.message.edit({ embeds: [newEmbed], components: [] });
+            await interaction.editReply(`❌ Erro ao registrar o tempo na issue ${issueId}.`);
+            requester?.send(`❌ Sua solicitação de ajuste de tempo para a issue ${issueId} foi rejeitada pelo bot devido a um erro técnico. Por favor, entre em contato com o administrador.`);
+        }
+    } else if (action === 'rejeitar') {
+        newEmbed.setColor(0xff0000).setFooter({ text: `Rejeitado por ${approver.username}` });
+        await interaction.message.edit({ embeds: [newEmbed], components: [] });
+        await interaction.editReply(`❌ Solicitação de ajuste de tempo para a issue ${issueId} foi rejeitada.`);
+        requester?.send(`❌ Sua solicitação de ajuste de tempo para a issue ${issueId} foi rejeitada por ${approver.username}.`);
     }
 }
 
